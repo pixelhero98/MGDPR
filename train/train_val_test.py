@@ -16,7 +16,7 @@ from sklearn.metrics import matthews_corrcoef, f1_score
 # Configure the device for running the model on GPU or CPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Configure the default variables // # these can be tuned
+# Configure the default variables // # these can be tuned // # examples
 sedate = ['2013-01-01', '2014-12-31']  # these can be tuned
 val_sedate = ['2015-01-01', '2015-06-30'] # these can be tuned
 test_sedate = ['2015-07-01', '2017-12-31'] # these can be tuned
