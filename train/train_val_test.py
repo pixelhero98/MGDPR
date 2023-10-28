@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from graph_temporal_data import Mydataset
-from Multi_GDNN import MGDNN
+from Multi_GDNN import MGDPR
 from torch_geometric.logging import log
 import torch.distributions
 import numpy as np
@@ -78,7 +78,7 @@ validation_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedat
 test_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 21, dataset_type[0])
 
 # Define model
-model = MGDNN(diffusion_transforms, node_feature_transforms, inter_layer_transforms,
+model = MGDPR(diffusion_transforms, node_feature_transforms, inter_layer_transforms,
               readout_layers, retention_layers, diffusion_layers, num_nodes,
               num_relation, time_steps)
 
