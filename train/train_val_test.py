@@ -88,7 +88,7 @@ model = model.to(device)
 
 # Define optimizer and objective function
 def theta_regularizer(theta):
-    row_sums = torch.sum(theta, dim=1)
+    row_sums = torch.sum(theta, dim=-1)
     ones = torch.ones_like(row_sums)
     return torch.sum(torch.abs(row_sums - ones))
 
