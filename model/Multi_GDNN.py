@@ -6,14 +6,15 @@ import torch.nn.functional as F
 class MGDPR(nn.Module):
 
   def __init__(self, relation_size, inter_layer_size, node_feature_size, readout_size, retention_size, layers,
-                 num_nodes, num_relation, time_steps):
+                 num_nodes, num_relation, time_steps, expansion_steps):
     super(MGDPR, self).__init__()
 
 
     # Initialize diffusion matrices for all layers, and causal masking and exponential decay matrix
-    self.Q = nn.Parameter(torch.randn(layers, num_relation, num_nodes, num_nodes))
-    self.theta = nn.Parameter(torch.randn(layers, num_relation))
+    self.Q = nn.Parameter(torch.randn(layers, num_relation, expansion_steps, num_nodes, num_nodes))
+    self.theta = nn.Parameter(torch.randn(layers, num_relation, expansion_steps))
     self.D_gamma = nn.Parameter(torch.randn(time_steps, time_steps))
+    self.K = expansion_steps
 
     # Initialize different module layers at all levels
     self.diffusion_layers = nn.ModuleList(
@@ -52,9 +53,12 @@ class MGDPR(nn.Module):
 
     # Diffusion with different relations
       for i in range(a.shape[0]):
-        z_sum += (self.theta[q][i] * self.Q[q][i] * a[i]) @ z
+        temp_box = torch.zeros_like(z)
+        for j in range(self.K)
+        temp_box += (self.theta[q][i][j] * self.Q[q][i][j] * a[i]) @ z
         # Copy current outputs for graph feature transform
-        box[i] =  (self.theta[q][i] * self.Q[q][i] * a[i]) @ z
+        box[i] =  temp_box
+        z_sum += temp_box
 
       # Information propagation transform
       z = self.activation1(self.diffusion_layers[q](z_sum))
