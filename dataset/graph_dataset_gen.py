@@ -69,7 +69,7 @@ class MyDataset(Dataset):
                     date_str = line[0][:10]
                     if self.check_years(date_str, start, end):
                         dates.add(date_str)
-                    elif self.check_years(date_str, end, '2017-12-31'):
+                    elif self.check_years(date_str, end, '2017-12-31'): # '2017-12-31' is just an example, if the latest data is used, fill in the current date
                         after_end_dates.add(date_str)
 
             date_sets.append(dates)
