@@ -12,6 +12,7 @@ from typing import List, Tuple
 from functools import lru_cache
 from sklearn.preprocessing import MinMaxScaler
 from tqdm import tqdm
+import math
 
 
 class MyDataset(Dataset):
@@ -37,7 +38,7 @@ class MyDataset(Dataset):
           #print('1')
 
   def __len__(self):
-    return len(self.dates - self.window + 1)
+    return len(self.dates) - self.window + 1
 
   def __getitem__(self, idx: int):
     directory_path = os.path.join(self.desti, f'{self.market}_{self.dataset_type}_{self.start}_{self.end}_{self.window}')
@@ -110,10 +111,7 @@ class MyDataset(Dataset):
     entropy = np.array([self.information_entropy(tuple(x)) for x in X])
     for i in range(X.shape[0]):
       for j in range(X.shape[0]):
-        if entropy[i] < entropy[j]:
-          A[i, j] = torch.tensor(energy[i] / energy[j], dtype=torch.float32)
-        else:
-          A[i, j] = 0.
+          A[i, j] = torch.tensor((energy[i] / energy[j]) * math.e ** (entropy[i] - entropy[j]), dtype=torch.float32)
 
     return A
 
