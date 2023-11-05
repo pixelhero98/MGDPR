@@ -1,16 +1,16 @@
 import torch
+import numpy as np
 import torch.nn.functional as F
+import torch.distributions
+import matplotlib.pyplot as plt
+import random
+import seaborn as sns
+import sklearn.preprocessing as skp
 from graph_dataset_gen import Mydataset
 from Multi_GDNN import MGDPR
 from torch_geometric.logging import log
-import torch.distributions
-import numpy as np
-import matplotlib.pyplot as plt
-import random
 from matplotlib import cm
 from matplotlib import axes
-import seaborn as sns
-import sklearn.preprocessing as skp
 from sklearn.metrics import matthews_corrcoef, f1_score
 
 # Configure the device for running the model on GPU or CPU
@@ -39,52 +39,31 @@ for idx, path in enumerate(com_path):
             com_list[idx].append(line[0])  # append first element of line if each line is a list
 NYSE_com_list = [com for com in NYSE_com_list if com not in NYSE_missing_list]
 
-# Define model // these can be tuned
-# diffusion_transforms = [21 * 4, 21 * 5, 21 * 5, 21 * 6, 21 * 6, 21 * 6, 21 * 8]
-# inter_layer_transforms = [5 * 21 * 5, 3 * 21 * 6,
-#                    5 * 21 * 5, 3 * 21 * 6,
-#                    5 * 21  * 6, 3 * 21 * 6,
-#                    5 * 21  * 6, 3 * 21 * 6,
-#                    5 * 21  * 6, 3 * 21 * 6,
-#                    5 * 21  * 8, 3 * 21 * 8]
-# graph_feature_transforms = [3 * 21 * 6, 3 * 21 * 6,
-#                     3 * 21 * 6 * 2, 3 * 21 * 6,
-#                     3 * 21 * 6 * 2, 3 * 21 * 6,
-#                     3 * 21 * 6 * 2, 3 * 21 * 6,
-#                     3 * 21 * 6 * 2, 3 * 21 * 6,
-#                     3 * 21 * 6 + 3 * 21 * 8, 3 * 21 * 6]
-# readout_layers = [3 * 21 * 6, 3 * 21 * 7, 2]
-# retention_layers = [1026 * 5, 1026 * 3, 1026 * 5, 1026 * 3, 1026 * 5, 1026 * 4]
-diffusion_transforms = [84, 105, 105, 126, 126, 126, 126]
-inter_layer_transforms = [420, 378,
-                          525, 378,
-                          525, 378,
-                          630, 378,
-                          630, 378,
-                          630, 504]
-node_feature_transforms = [378, 378,
-                           756, 378,
-                           756, 378,
-                           756, 378,
-                           756, 378,
-                           882, 378]
-readout_layers = [378, 441, 2] # can be tuned
-retention_layers = [5130, 3078, 5130, 3078, 5130, 4104] # can be tuned
-diffusion_layers, num_nodes, num_relation, time_steps = 6, 1026, 5, 21 # can be tuned
-expansion_steps = 7
+# Define model (these can be tuned)
+d_layers, num_nodes, time_steps, num_relation, gamma, diffusion_steps = 6, 1026, 21, 5, 2.5e-4, 7
+
+diffusion_layers = [time_steps, 63, 84, 105, 105, 126, 105]
+
+retention_layers = [3078, 1024, 4104, 4104, 2048, 5130,
+                    5130, 2048, 6156, 5130, 2048, 6156,
+                    6156, 2048, 5130, 5130, 4096, 9234]
+
+ret_linear_layers = [21, 84, 84, 105, 105, 126,
+                     126, 126, 105, 105, 189]
+
+mlp_layers = [189, 256, 2]
+
 # Generate datasets
 train_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 21, dataset_type[0])
 validation_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 21, dataset_type[0])
 test_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 21, dataset_type[0])
 
 # Define model
-model = MGDPR(diffusion_transforms, node_feature_transforms, inter_layer_transforms,
-              readout_layers, retention_layers, diffusion_layers, num_nodes,
-              num_relation, time_steps, expansion_steps)
+model = MGDPR(diffusion_layers, retention_layers, ret_linear_layers, mlp_layers, d_layers,
+              num_nodes, time_steps, num_relation, gamma, diffusion_steps)
 
 # Pass model and datasets to GPU
 model = model.to(device)
-
 
 # Define optimizer and objective function
 def theta_regularizer(theta):
