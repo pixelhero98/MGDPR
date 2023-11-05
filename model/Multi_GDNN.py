@@ -1,128 +1,82 @@
 import torch
 import torch.nn as nn
+import numpy as np
 import torch.nn.functional as F
+from PaRet import ParallelRetention
+from MGD import MultiReDiffusion
 
 class MGDPR(nn.Module):
-    def __init__(self, relation_size, inter_layer_size, node_feature_size, readout_size, retention_size, layers, num_nodes, num_relation, time_steps, expansion_steps):
-        """
-        Initialize the MGDPR model.
+    def __init__(self, diffusion, retention, ret_linear, post_pro, layers, num_nodes, time_dim, num_relation, gamma, expansion_steps):
 
-        Args:
-            relation_size (list): Sizes of relation embeddings at each layer.
-            inter_layer_size (list): Sizes of hidden layers for inter-layer transformation.
-            node_feature_size (list): Sizes of hidden layers for node feature transformation.
-            readout_size (list): Sizes of hidden layers for the readout process.
-            retention_size (list): Sizes of hidden layers for retention feature transformation.
-            layers (int): Number of layers.
-            num_nodes (int): Number of nodes in the graph.
-            num_relation (int): Number of relation types.
-            time_steps (int): Number of time steps.
-            expansion_steps (int): Number of expansion steps.
-        """
         super(MGDPR, self).__init__()
+        self.layers = layers
 
-        # Initialize diffusion matrices for all layers, and causal masking and exponential decay matrix
-        self.Q = nn.Parameter(torch.randn(layers, num_relation, expansion_steps, num_nodes, num_nodes))
+        # Initialize transition matrices, weight coefficients, causal masking and exponential decay matrix for all layers
+        self.T = nn.Parameter(torch.randn(layers, num_relation, expansion_steps, num_nodes, num_nodes))
         self.theta = nn.Parameter(torch.randn(layers, num_relation, expansion_steps))
-        self.D_gamma = nn.Parameter(torch.randn(time_steps, time_steps))
-        self.K = expansion_steps
+        lower_tri = torch.tril(torch.ones(time_dim, time_dim), diagonal=-1)
+        self.D_gamma = torch.where(lower_tri == 0, torch.tensor(0.0), gamma ** -lower_tri)
 
-        # Initialize different module layers at all levels
+
+        # Initialize different module layers
         self.diffusion_layers = nn.ModuleList(
-            [nn.Linear(relation_size[i], relation_size[i + 1]) for i in range(len(relation_size) - 1)])
-        self.inter_layers = nn.ModuleList(
-            [nn.Linear(inter_layer_size[2 * i], inter_layer_size[2 * i + 1]) for i in range(len(inter_layer_size) // 2)])
-        self.node_feature_layers = nn.ModuleList(
-            [nn.Linear(node_feature_size[2 * i], node_feature_size[2 * i + 1]) for i in range(len(node_feature_size) // 2)]
-        )
-        self.MLP = nn.ModuleList(
-            [nn.Linear(readout_size[i], readout_size[i + 1]) for i in range(len(readout_size) - 1)]
-        )
+            [MultiReDiffusion(diffusion[i], diffusion[i + 1], num_relation) for i in range(len(diffusion) - 1)])
         self.retention_layers = nn.ModuleList(
-            [nn.Linear(retention_size[2 * i], retention_size[2 * i + 1]) for i in range(len(retention_size) // 2)]
+            [ParallelRetention(time_dim, retention[2 * i], retention[2 * i + 1], retention[2 * i + 2]
+                               ) for i in range(len(retention) // 2)]
         )
+        self.ret_linear = nn.ModuleList([nn.Linear(ret_linear[i], ret_linear[i + 1]) for i in range(len(ret_linear) - 1)])
+        self.mlp = nn.ModuleList([nn.Linear(post_pro[i], post_pro[i + 1]) for i in range(len(post_pro) - 1)])
 
-        # Initialize activations
-        self.activation1 = nn.PReLU()
-        self.activation2 = nn.ReLU()
+        # Initialize activation functions
+        self.activation1 = nn.Leaky_ReLU()
+        self.activation2 = nn.PReLU()
 
     def forward(self, x, a):
-        """
-        Forward pass of the MGDPR model.
+        # Initialize h with x
+        h = x
 
-        Args:
-            x (torch.Tensor): Node feature tensor with shape [num_relation, num_node, time_steps].
-            a (torch.Tensor): Adjacency tensor with shape [num_relation, num_node, num_node].
+        # Information diffusion and graph representation learning
+        for l in range(self.layers):
 
-        Returns:
-            torch.Tensor: Predicted graph representation.
-        """
-        # Retention produces the learned input tensor x [num_node, hidden_dim]
-        time_length = x.shape[2]
-        x = x.permute(2, 1, 0).contiguous().view(time_length, -1)
-        x0 = self.retention_layers[0](x) @ self.retention_layers[1](x).transpose(0, 1)
-        x = (self.D_gamma * x0) @ self.retention_layers[2](x)
-        x = self.activation2(x)
+            # Multi-relational Graph Diffusion
+            h, u = self.diffusion_layers[l](self.theta[l], self.T[l], a, h)
 
-        # Initialize latent representation with retention feature matrix
-        z = x.view(1026, -1)
+            # Parallel Retention
+            eta = self.retention_layers[l](u, self.D_gamma)
 
-        # Information diffusion and graph feature learning
-        for q in range(self.Q.shape[0]):
-
-            # Information diffusion
-            z_sum = torch.zeros_like(z)
-            box = torch.zeros((a.shape[0], z.shape[0], z.shape[1)).to(device)
-
-            # Diffusion with different relations
-            for i in range(a.shape[0]):
-                temp_box = torch.zeros_like(z)
-                for j in range(self.K):
-                    temp_box += (self.theta[q][i][j] * self.Q[q][i][j] * a[i]) @ z
-                # Copy current outputs for graph feature transform
-                box[i] = temp_box
-                z_sum += temp_box
-
-            # Information propagation transform
-            z = self.activation1(self.diffusion_layers[q](z_sum))
-
-            # Graph feature transform
-            if q != 0:
-                s = self.node_feature_layers[q](box.view(box.shape[1], -1))
-                s = self.activation2(s)
-                f = self.activation2(self.inter_layers[q](torch.cat((f, s), dim=1)))
+            # Decoupled representation transform
+            if l == 0:
+                h_prime = self.ret_linear[l](x) + eta
             else:
-                s = self.node_feature_layers[q](box.view(box.shape[1], -1))
-                s = self.activation2(s)
-                f = self.activation2(self.inter_layers[q](s))
+                h_prime = self.ret_linear[l](h_prime) + eta
 
-        # Readout process to generate final graph representation
-        for mlp in self.MLP:
-            f = mlp(f)
+        # Post-processing to generate final graph representation
+        for mlp in self.mlp:
+            h_prime = mlp(h_prime)
+            if mlp is not self.mlp[-1]:
+                h_prime = self.activation2(h_prime)
 
-            if mlp is not self.MLP[-1]:
-                f = self.activation2(f)
-
-        return f
+        return h_prime
 
     def reset_parameters(self):
         """
         Reset model parameters with appropriate initialization methods.
         """
-        nn.init.normal_(self.Q)
+        nn.init.normal_(self.T)
         nn.init.normal_(self.D_gamma)
         nn.init.normal_(self.theta)
 
-        for layer in self.diffusion_layers:
-            nn.init.kaiming_uniform_(layer.weight)
-        for layer in self.inter_layers:
-            nn.init.kaiming_uniform_(layer.weight)
-        for layer in self.node_feature_layers:
-            nn.init.kaiming_uniform_(layer.weight)
-        for layer in self.retention_layers:
-            nn.init.kaiming_uniform_(layer.weight)
-        for layer in self.MLP:
-            if layer is self.MLP[-1]:
-                nn.init.xavier_uniform_(layer.weight)
-            else:
-                nn.init.kaiming_uniform_(layer.weight)
+        #for layer in self.diffusion_layers:
+         #   nn.init.kaiming_uniform_(layer.weight)
+        #for layer in self.retention_layers:
+         #   nn.init.kaiming_uniform_(layer.weight)
+        #for layer in self.ret_linear:
+         #   nn.init.kaiming_uniform_(layer.weight)
+        #for layer in self.ret_feature:
+         #   nn.init.kaiming_uniform_(layer.weight)
+        #for layer in self.mlp:
+         #   if layer is self.mlp[-1]:
+          #      nn.init.xavier_uniform_(layer.weight)
+           # else:
+            #    nn.init.kaiming_uniform_(layer.weight)
