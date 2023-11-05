@@ -22,8 +22,7 @@ class MGDPR(nn.Module):
         self.diffusion_layers = nn.ModuleList(
             [MultiReDiffusion(diffusion[i], diffusion[i + 1], num_relation) for i in range(len(diffusion) - 1)])
         self.retention_layers = nn.ModuleList(
-            [ParallelRetention(time_dim, retention[2 * i], retention[2 * i + 1], retention[2 * i + 2]
-                               ) for i in range(len(retention) // 2)]
+            [ParallelRetention(time_dim, retention[2 * i], retention[2 * i + 1], retention[2 * i + 2]) for i in range(len(retention) // 2)]
         )
         self.ret_linear = nn.ModuleList([nn.Linear(ret_linear[i], ret_linear[i + 1]) for i in range(len(ret_linear) - 1)])
         self.mlp = nn.ModuleList([nn.Linear(post_pro[i], post_pro[i + 1]) for i in range(len(post_pro) - 1)])
