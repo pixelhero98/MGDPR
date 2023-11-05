@@ -34,7 +34,8 @@ class MGDPR(nn.Module):
     def forward(self, x, a):
         # Initialize h with x
         h = x
-
+        h_prime = h
+        
         # Information diffusion and graph representation learning
         for l in range(self.layers):
 
