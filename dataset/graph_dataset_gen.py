@@ -105,7 +105,7 @@ class MyDataset(Dataset):
         entropy = np.array([self.information_entropy(tuple(x)) for x in X])
         for i in range(X.shape[0]):
             for j in range(X.shape[0]):
-                A[i, j] = torch.tensor((energy[i] / energy[j]) * (math.e ** (entropy[i] - entropy[j)), dtype=torch.float32))
+                A[i, j] = torch.tensor((energy[i] / energy[j]) * (math.exp(entropy[i] - entropy[j])), dtype=torch.float32)
 
         return A
 
