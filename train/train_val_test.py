@@ -44,13 +44,13 @@ d_layers, num_nodes, time_steps, num_relation, gamma, diffusion_steps = 6, 1026,
 
 diffusion_layers = [time_steps, 63, 84, 105, 105, 126, 105]
 
-retention_layers = [3078, 1024, 4104, 4104, 2048, 5130,
-                    5130, 2048, 6156, 5130, 2048, 6156,
-                    6156, 2048, 5130, 5130, 4096, 9234]
+retention_layers = [5 * 3078, 1024, 4104, 5 *  4104, 2048, 5130,
+                    5 * 5130, 2048, 6156, 5 * 5130, 2048, 6156,
+                    5 * 6156, 2048, 5130, 5 * 5130, 4096, 9234]
 
 ret_linear_layers = [21, 84, 105, 126, 126, 105, 189]
 
-mlp_layers = [189, 256, 2]
+mlp_layers = [189, 256, 128, 2]
 
 # Generate datasets
 train_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 21, dataset_type[0])
