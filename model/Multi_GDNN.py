@@ -26,10 +26,8 @@ class MGDPR(nn.Module):
         )
         self.ret_linear = nn.ModuleList([nn.Linear(ret_linear[i], ret_linear[i + 1]) for i in range(len(ret_linear) - 1)])
         self.mlp = nn.ModuleList([nn.Linear(post_pro[i], post_pro[i + 1]) for i in range(len(post_pro) - 1)])
-
-        # Initialize activation functions
-        self.activation1 = nn.Leaky_ReLU()
-        self.activation2 = nn.PReLU()
+        
+        self.activation = torch.nn.LeakyReLU()
 
     def forward(self, x, a):
         # Initialize h with x
@@ -55,7 +53,7 @@ class MGDPR(nn.Module):
         for mlp in self.mlp:
             h_prime = mlp(h_prime)
             if mlp is not self.mlp[-1]:
-                h_prime = self.activation2(h_prime)
+                h_prime = self.activation(h_prime)
 
         return h_prime
 
