@@ -11,7 +11,7 @@ class MultiReDiffusion(torch.nn.Module):
         self.activation1 = torch.nn.GELU()
         self.activation0 = torch.nn.PReLU()
 
-    def forward(self, theta, t, a, x):
+    def forward(self, theta, t, x, a):
 
         u = torch.zeros_like(theta.shape[0], a.shape[1], self.output)
 
