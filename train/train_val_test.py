@@ -54,8 +54,8 @@ mlp_layers = [189, 256, 128, 2]
 
 # Generate datasets
 train_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 21, dataset_type[0])
-validation_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 21, dataset_type[0])
-test_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 21, dataset_type[0])
+validation_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, val_sedate[0], val_sedate[1], 21, dataset_type[1])
+test_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, test_sedate[0], test_sedate[1], 21, dataset_type[2])
 
 # Define model
 model = MGDPR(diffusion_layers, retention_layers, ret_linear_layers, mlp_layers, d_layers,
@@ -97,11 +97,9 @@ for epoch in range(epochs):
         C = C.to(device)  # label vector
 
         objective = F.cross_entropy(model(X, A), C)
-        objective += theta_regularizer(model.theta)
-
         objective_total += objective
 
-    objective_average = objective_total / len(train_dataset)
+    objective_average = objective_total / len(train_dataset) + theta_regularizer(model.theta)
     objective_average.backward()
     optimizer.step()
     optimizer.zero_grad()
