@@ -33,7 +33,6 @@ class MGDPR(nn.Module):
 
         self.mlp = nn.ModuleList([nn.Linear(post_pro[i], post_pro[i + 1]) for i in range(len(post_pro) - 1)])
 
-        self.activation = torch.nn.LeakyReLU()
 
     def forward(self, x, a):
         # Initialize h with x
@@ -55,13 +54,10 @@ class MGDPR(nn.Module):
             else:
                 h_prime = torch.concat((eta, self.ret_linear_1[l](h_prime)), dim=1)
                 h_prime = self.ret_linear_2[l](h_prime)
-                print(h_prime.shape)
 
         # Post-processing to generate final graph representation
         for mlp in self.mlp:
             h_prime = mlp(h_prime)
-            if mlp is not self.mlp[-1]:
-                h_prime = self.activation(h_prime)
 
         return h_prime
 
