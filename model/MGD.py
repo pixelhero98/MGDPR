@@ -8,7 +8,7 @@ class MultiReDiffusion(torch.nn.Module):
         self.output = output_dim
         self.fc_layers = nn.ModuleList([nn.Linear(input_dim, output_dim) for _ in range(num_relation)])
         self.update_layer = torch.nn.Conv2d(num_relation, num_relation, kernel_size=1)
-        self.activation1 = torch.nn.LeakyReLU()
+        self.activation1 = torch.nn.PReLU()
         self.activation0 = torch.nn.PReLU()
         self.num_relation = num_relation
 
