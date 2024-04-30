@@ -7,9 +7,10 @@ class MultiReDiffusion(torch.nn.Module):
         super(MultiReDiffusion, self).__init__()
         self.output = output_dim
         self.fc_layers = nn.ModuleList([nn.Linear(input_dim, output_dim) for _ in range(num_relation)])
-        self.update_layer = torch.nn.Conv2d(num_relation, 1, kernel_size=1)
+        self.update_layer = torch.nn.Conv2d(num_relation, num_relation, kernel_size=1)
         self.activation1 = torch.nn.LeakyReLU()
         self.activation0 = torch.nn.PReLU()
+        self.num_relation = num_relation
 
     def forward(self, theta, t, a, x):
 
@@ -17,12 +18,14 @@ class MultiReDiffusion(torch.nn.Module):
 
         for i in range(theta.shape[0]):
             s = torch.zeros_like(a[i])
+
             for j in range(theta.shape[-1]):
                 s += (theta[i][j] * t[i][j]) * a[i]
-            u[i] = self.activation0(self.fc_layers[i](s @ x))
 
-        h = u.unsqueeze(0)
+            u[i] = self.activation0(self.fc_layers[i](s @ x[i]))
+
+        h = u.unsqueeze(0).to('cuda')
         h = self.activation1(self.update_layer(h))
-        h = h.squeeze(0)
+        h = h.reshape(self.num_relation, a.shape[1], -1)
 
         return h, u
