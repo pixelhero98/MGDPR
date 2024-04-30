@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
-import numpy as np
-import torch.nn.functional as F
 from PaRet import ParallelRetention
 from MGD import MultiReDiffusion
 
+
 class MGDPR(nn.Module):
-    def __init__(self, diffusion, retention, ret_linear, post_pro, layers, num_nodes, time_dim, num_relation, gamma, expansion_steps):
+    def __init__(self, diffusion, retention, ret_linear_1, ret_linear_2, post_pro, layers, num_nodes, time_dim, num_relation, gamma,
+                 expansion_steps):
 
         super(MGDPR, self).__init__()
         self.layers = layers
@@ -17,23 +17,28 @@ class MGDPR(nn.Module):
         lower_tri = torch.tril(torch.ones(time_dim, time_dim), diagonal=-1)
         self.D_gamma = torch.where(lower_tri == 0, torch.tensor(0.0), gamma ** -lower_tri)
 
-
         # Initialize different module layers
         self.diffusion_layers = nn.ModuleList(
             [MultiReDiffusion(diffusion[i], diffusion[i + 1], num_relation) for i in range(len(diffusion) - 1)])
+
         self.retention_layers = nn.ModuleList(
-            [ParallelRetention(time_dim, retention[3 * i], retention[3 * i + 1], retention[3 * i + 2]) for i in range(len(retention) // 3)]
+            [ParallelRetention(time_dim, retention[3 * i], retention[3 * i + 1], retention[3 * i + 2]) for i in
+             range(len(retention) // 3)]
         )
-        self.ret_linear = nn.ModuleList([nn.Linear(ret_linear[i], ret_linear[i + 1]) for i in range(len(ret_linear) - 1)])
+        self.ret_linear_1 = nn.ModuleList(
+            [nn.Linear(ret_linear_1[2 * i], ret_linear_1[2 * i + 1]) for i in range(len(ret_linear_1) // 2)])
+
+        self.ret_linear_2 = nn.ModuleList(
+            [nn.Linear(ret_linear_2[2 * i], ret_linear_2[2 * i + 1]) for i in range(len(ret_linear_2) // 2)])
+
         self.mlp = nn.ModuleList([nn.Linear(post_pro[i], post_pro[i + 1]) for i in range(len(post_pro) - 1)])
-        
+
         self.activation = torch.nn.LeakyReLU()
 
     def forward(self, x, a):
         # Initialize h with x
         h = x
-        h_prime = h
-        
+
         # Information diffusion and graph representation learning
         for l in range(self.layers):
 
@@ -41,13 +46,16 @@ class MGDPR(nn.Module):
             h, u = self.diffusion_layers[l](self.theta[l], self.T[l], a, h)
 
             # Parallel Retention
-            eta = self.retention_layers[l](u, self.D_gamma)
+            eta = self.retention_layers[l](u.to('cuda'), self.D_gamma)
 
             # Decoupled representation transform
             if l == 0:
-                h_prime = self.ret_linear[l](x) + eta
+                h_prime = torch.concat((eta, self.ret_linear_1[l](x.view(x.shape[1], -1))), dim=1)
+                h_prime = self.ret_linear_2[l](h_prime)
             else:
-                h_prime = self.ret_linear[l](h_prime) + eta
+                h_prime = torch.concat((eta, self.ret_linear_1[l](h_prime)), dim=1)
+                h_prime = self.ret_linear_2[l](h_prime)
+                print(h_prime.shape)
 
         # Post-processing to generate final graph representation
         for mlp in self.mlp:
@@ -64,17 +72,3 @@ class MGDPR(nn.Module):
         nn.init.normal_(self.T)
         nn.init.normal_(self.D_gamma)
         nn.init.normal_(self.theta)
-
-        #for layer in self.diffusion_layers:
-         #   nn.init.kaiming_uniform_(layer.weight)
-        #for layer in self.retention_layers:
-         #   nn.init.kaiming_uniform_(layer.weight)
-        #for layer in self.ret_linear:
-         #   nn.init.kaiming_uniform_(layer.weight)
-        #for layer in self.ret_feature:
-         #   nn.init.kaiming_uniform_(layer.weight)
-        #for layer in self.mlp:
-         #   if layer is self.mlp[-1]:
-          #      nn.init.xavier_uniform_(layer.weight)
-           # else:
-            #    nn.init.kaiming_uniform_(layer.weight)
