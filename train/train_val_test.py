@@ -1,16 +1,9 @@
 import torch
-import numpy as np
+import csv as csv
 import torch.nn.functional as F
 import torch.distributions
-import matplotlib.pyplot as plt
-import random
-import seaborn as sns
-import sklearn.preprocessing as skp
 from graph_dataset_gen import Mydataset
 from Multi_GDNN import MGDPR
-from torch_geometric.logging import log
-from matplotlib import cm
-from matplotlib import axes
 from sklearn.metrics import matthews_corrcoef, f1_score
 
 # Configure the device for running the model on GPU or CPU
@@ -39,45 +32,64 @@ for idx, path in enumerate(com_path):
             com_list[idx].append(line[0])  # append first element of line if each line is a list
 NYSE_com_list = [com for com in NYSE_com_list if com not in NYSE_missing_list]
 
-# Define model (these can be tuned)
-d_layers, num_nodes, time_steps, num_relation, gamma, diffusion_steps = 6, 1026, 21, 5, 2.5e-4, 7
-
-diffusion_layers = [time_steps, 63, 84, 105, 105, 126, 105]
-
-retention_layers = [5 * 3078, 1024, 4104, 5 *  4104, 2048, 5130,
-                    5 * 5130, 2048, 6156, 5 * 5130, 2048, 6156,
-                    5 * 6156, 2048, 5130, 5 * 5130, 4096, 9234]
-
-ret_linear_layers = [21, 84, 105, 126, 126, 105, 189]
-
-mlp_layers = [189, 256, 128, 2]
-
 # Generate datasets
 train_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 21, dataset_type[0])
-validation_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, val_sedate[0], val_sedate[1], 21, dataset_type[1])
-test_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, test_sedate[0], test_sedate[1], 21, dataset_type[2])
+validation_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 21, dataset_type[0])
+test_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 21, dataset_type[0])
+
+# Define model (these can be tuned)
+n = len(NASDAQ_com_list) # number of companies in NASDAQ
+
+d_layers, num_nodes, time_steps, num_relation, gamma, diffusion_steps = 6, n, 21, 5, 2.5e-4, 7
+
+diffusion_layers = [time_steps, 3 * time_steps, 4 * time_steps, 5 * time_steps, 5 * time_steps, 6 * time_steps, 5 * time_steps]
+
+retention_layers = [num_relation*3*n, num_relation*5*n, num_relation*4*n,
+                    num_relation*4*n, num_relation*5*n, num_relation*5*n,
+                    num_relation*5*n, num_relation*5*n, num_relation*5*n,
+                    num_relation*5*n, num_relation*5*n, num_relation*5*n,
+                    num_relation*6*n, num_relation*5*n, num_relation*5*n,
+                    num_relation*5*n, num_relation*5*n, num_relation*5*n]
+
+
+ret_linear_layers_1 = [time_steps * num_relation, time_steps * num_relation,
+                     time_steps * num_relation * 5, time_steps * num_relation,
+                     time_steps * num_relation * 6, time_steps * num_relation,
+                     time_steps * num_relation * 6, time_steps * num_relation,
+                     time_steps * num_relation * 6, time_steps * num_relation,
+                     time_steps * num_relation * 6, time_steps * num_relation]
+
+
+ret_linear_layers_2 = [time_steps * num_relation * 5, time_steps * num_relation * 5,
+                     time_steps * num_relation * 6, time_steps * num_relation * 6,
+                     time_steps * num_relation * 6, time_steps * num_relation * 6,
+                     time_steps * num_relation * 6, time_steps * num_relation * 6,
+                     time_steps * num_relation * 6, time_steps * num_relation * 6,
+                     time_steps * num_relation * 6, time_steps * num_relation * 6]
+
+mlp_layers = [num_relation * 5 * time_steps + time_steps * num_relation, 128, 2]
 
 # Define model
-model = MGDPR(diffusion_layers, retention_layers, ret_linear_layers, mlp_layers, d_layers,
+model = MGDPR(diffusion_layers, retention_layers, ret_linear_layers_1, ret_linear_layers_2, mlp_layers, d_layers,
               num_nodes, time_steps, num_relation, gamma, diffusion_steps)
 
 # Pass model and datasets to GPU
 model = model.to(device)
 
 # Define optimizer and objective function
+
+
 def theta_regularizer(theta):
     row_sums = torch.sum(theta, dim=-1)
     ones = torch.ones_like(row_sums)
     return torch.sum(torch.abs(row_sums - ones))
 
-#def D_gamma_regularizer(D_gamma):
- #   upper_tri = torch.triu(D_gamma, diagonal=1)
-  #  return torch.sum(torch.abs(upper_tri))
+
+def D_gamma_regularizer(D_gamma):
+    upper_tri = torch.triu(D_gamma, diagonal=1)
+    return torch.sum(torch.abs(upper_tri))
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-
-# Define evaluation metrics
-# ACC, MCC, and F1
 
 # Define training process & validation process & testing process
 epochs = 1000
@@ -115,10 +127,9 @@ for epoch in range(epochs):
         out = model(X, A).argmax(dim=1)
         acc += int((out == C).sum())
 
-
     if epoch % 10 == 0:
         print(f'Epoch {epoch}: {objective_average.item()}')
-        print('ACC: ', acc / ( len(train_dataset) * C.shape[0]))
+        print('ACC: ', acc / (len(train_dataset) * C.shape[0]))
 
 # Validation
 model.eval()
@@ -128,7 +139,6 @@ f1 = 0
 mcc = 0
 
 for idx, sample in enumerate(validation_dataset):
-
     X = sample['X']  # node feature tensor
     A = sample['A']  # adjacency tensor
     C = sample['Y']  # label vector
@@ -140,7 +150,7 @@ for idx, sample in enumerate(validation_dataset):
 
 print(acc / (len(validation_dataset) * C.shape[0]))
 print(f1 / len(validation_dataset))
-print(mcc/ len(validation_dataset))
+print(mcc / len(validation_dataset))
 
 # Test
 acc = 0
