@@ -80,14 +80,14 @@ model = model.to(device)
 
 
 def theta_regularizer(theta):
-    row_sums = torch.sum(theta, dim=-1)
+    row_sums = torch.sum(theta.to(device), dim=-1)
     ones = torch.ones_like(row_sums)
     return torch.sum(torch.abs(row_sums - ones))
 
 
-def D_gamma_regularizer(D_gamma):
-    upper_tri = torch.triu(D_gamma, diagonal=1)
-    return torch.sum(torch.abs(upper_tri))
+#def D_gamma_regularizer(D_gamma):
+    #upper_tri = torch.triu(D_gamma, diagonal=1)
+    #return torch.sum(torch.abs(upper_tri))
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
@@ -111,7 +111,7 @@ for epoch in range(epochs):
         objective = F.cross_entropy(model(X, A), C)
         objective_total += objective
 
-    objective_average = objective_total / len(train_dataset) + theta_regularizer(model.theta)
+    objective_average = objective_total / len(train_dataset) #+ theta_regularizer(model.theta) regularization may resultvery slow learning process, optional usage.
     objective_average.backward()
     optimizer.step()
     optimizer.zero_grad()
