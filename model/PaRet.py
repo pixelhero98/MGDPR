@@ -1,5 +1,5 @@
 import torch
-import torch.nn as nn  # Added import for nn
+import torch.nn as nn
 
 class ParallelRetention(torch.nn.Module):
 
@@ -21,9 +21,10 @@ class ParallelRetention(torch.nn.Module):
     def forward(self, x, d_gamma):
 
         num_node = x.shape[1]
-        x = x.permute(2, 1, 0).contiguous().view(self.time_dim, -1)
+        x = x.view(self.time_dim, -1)
+
         x0 = self.Q_layers(x) @ self.K_layers(x).transpose(0, 1)
-        x = (d_gamma * x0) @ self.V_layers(x)
+        x = (d_gamma.to('cuda') * x0.to('cuda')) @ self.V_layers(x)
         x = self.activation(self.ret_feature(x))
 
         return x.view(num_node, -1)
