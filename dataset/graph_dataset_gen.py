@@ -84,12 +84,10 @@ class MyDataset(Dataset):
 
         return sorted(all_dates), next_common_day
 
-    @lru_cache(maxsize=None)
     def signal_energy(self, x_tuple: Tuple[float]) -> float:
         x = np.array(x_tuple)
         return np.sum(np.square(x))
 
-    @lru_cache(maxsize=None)
     def information_entropy(self, x_tuple: Tuple[float]) -> float:
         x = np.array(x_tuple)
         unique, counts = np.unique(x, return_counts=True)
@@ -106,8 +104,8 @@ class MyDataset(Dataset):
         for i in range(X.shape[0]):
             for j in range(X.shape[0]):
                 A[i, j] = torch.tensor((energy[i] / energy[j]) * (math.exp(entropy[i] - entropy[j])), dtype=torch.float32)
-
-        return A
+        
+        return torch.log(A[A<1] = 1)
 
     def node_feature_matrix(self, dates: List[str], comlist: List[str], market: str, path: str) -> torch.Tensor:
         # Convert dates to datetime format for easier comparison
