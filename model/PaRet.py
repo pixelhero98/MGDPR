@@ -10,7 +10,7 @@ class ParallelRetention(torch.nn.Module):
         self.inter_dim = inter_dim
         self.out_dim = out_dim
 
-        self.activation = torch.nn.LeakyReLU()
+        self.activation = torch.nn.PReLU()
 
         self.Q_layers = nn.Linear(self.in_dim, self.inter_dim)
         self.K_layers = nn.Linear(self.in_dim, self.inter_dim)
