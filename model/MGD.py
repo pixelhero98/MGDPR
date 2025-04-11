@@ -13,19 +13,18 @@ class MultiReDiffusion(torch.nn.Module):
         self.num_relation = num_relation
 
     def forward(self, theta, t, a, x):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        diffusions = torch.zeros(theta.shape[0], a.shape[1], self.output).to(device)
 
-        u = torch.zeros(theta.shape[0], a.shape[1], self.output)
+        for rel in range(theta.shape[0]):
+            diffusion_mat = torch.zeros_like(a[rel])
+            for step in range(theta.shape[-1]):
+                diffusion_mat += theta[rel][step] * t[rel][step] * a[rel]
+            
+            diffusion_feat = torch.matmul(diffusion_mat, x[rel])
+            diffusions[rel] = self.activation0(self.fc_layers[rel](diffusion_feat))
 
-        for i in range(theta.shape[0]):
-            s = torch.zeros_like(a[i])
+        latent_feat = self.activation1(self.update_layer(diffusions.unsqueeze(0)))
+        latent_feat = latent_feat.reshape(self.num_relation, a.shape[1], -1)
 
-            for j in range(theta.shape[-1]):
-                s += (theta[i][j] * t[i][j]) * a[i]
-
-            u[i] = self.activation0(self.fc_layers[i](s @ x[i]))
-
-        h = u.unsqueeze(0).to('cuda')
-        h = self.activation1(self.update_layer(h))
-        h = h.reshape(self.num_relation, a.shape[1], -1)
-
-        return h, u
+        return latent_feat, diffusions
