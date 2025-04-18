@@ -116,7 +116,7 @@ for epoch in range(epochs):
         objective_total += objective.item()
 
     # If performance progress of the model is required
-        out = model(X, A).argmax(dim=1)
+        out = out.argmax(dim=1)
         correct += int((out == C).sum()).item()
         total += C.shape[0]
         if epoch % 1 == 0:
