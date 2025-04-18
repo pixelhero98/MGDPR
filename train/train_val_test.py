@@ -102,7 +102,7 @@ for epoch in range(epochs):
     correct = 0
     total = 0
 
-    for sample in train_dataset: # Recommand to update every sample, full batch training can be time-consuming
+    for sample in train_dataset: # Recommend to update every sample, full batch training can be time-consuming
         X = sample['X'].to(device)  # node feature tensor
         A = sample['A'].to(device)  # adjacency tensor
         C = sample['Y'].long()
