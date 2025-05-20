@@ -16,10 +16,15 @@ class MultiReDiffusion(torch.nn.Module):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         diffusions = torch.zeros(theta.shape[0], a.shape[1], self.output).to(device)
 
+        # Normalize diffusion coefficients so that they sum to one per relation
+        theta = torch.softmax(theta, dim=-1)
+
         for rel in range(theta.shape[0]):
             diffusion_mat = torch.zeros_like(a[rel])
             for step in range(theta.shape[-1]):
-                diffusion_mat += theta[rel][step] * t[rel][step] * a[rel]
+                # Normalize transition matrix to be column stochastic
+                t_norm = torch.softmax(t[rel][step], dim=0)
+                diffusion_mat += theta[rel][step] * t_norm * a[rel]
             
             diffusion_feat = torch.matmul(diffusion_mat, x[rel])
             diffusions[rel] = self.activation0(self.fc_layers[rel](diffusion_feat))

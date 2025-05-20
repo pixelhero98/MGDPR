@@ -1,15 +1,11 @@
-from scipy.linalg import expm
 import torch
 import csv
 import os
 import numpy as np
-import random
-import sklearn.preprocessing as skp
 from torch.utils.data import Dataset
 import pandas as pd
 from datetime import datetime
 from typing import List, Tuple
-from functools import lru_cache
 from tqdm import tqdm
 import math
 
@@ -96,6 +92,21 @@ class MyDataset(Dataset):
 
         return entropy
 
+<<<<<<< HEAD
+    def adjacency_matrix(self, X: torch.Tensor) -> torch.Tensor:
+        A = torch.zeros((X.shape[0], X.shape[0]))
+        X = X.numpy()
+        energy = np.array([self.signal_energy(tuple(x)) for x in X])
+        entropy = np.array([self.information_entropy(tuple(x)) for x in X])
+        for i in range(X.shape[0]):
+            for j in range(X.shape[0]):
+                A[i, j] = torch.tensor(
+                    (energy[i] / energy[j]) * (math.exp(entropy[i] - entropy[j])),
+                    dtype=torch.float32,
+                )
+
+        # Avoid values below one before applying logarithm
+=======
     def adjacency_matrix(self, X: torch.Tensor) -> torch.Tensor:
         """Compute adjacency matrix based on signal energy and information entropy."""
         A = torch.zeros((X.shape[0], X.shape[0]))
@@ -108,6 +119,7 @@ class MyDataset(Dataset):
                 A[i, j] = torch.tensor(val, dtype=torch.float32)
 
         # Avoid log(0) by ensuring values are at least 1 before taking log
+>>>>>>> origin/main
         A[A < 1] = 1
         return torch.log(A)
 

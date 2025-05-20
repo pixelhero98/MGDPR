@@ -14,6 +14,8 @@ class ParallelRetention(torch.nn.Module):
         self.K_layers = nn.Linear(self.in_dim, self.inter_dim)
         self.V_layers = nn.Linear(self.in_dim, self.inter_dim)
         self.ret_feat = torch.nn.Linear(self.inter_dim, self.out_dim)
+        # Group normalization as described in the paper
+        self.group_norm = nn.GroupNorm(1, self.inter_dim)
 
     def forward(self, x, d_gamma):
         num_node = x.shape[1]
@@ -23,6 +25,10 @@ class ParallelRetention(torch.nn.Module):
 
         inter_feat = self.Q_layers(x) @ self.K_layers(x).transpose(0, 1)
         x = (d_gamma * inter_feat) @ self.V_layers(x)
+        # Apply group normalization before non-linearity
+        x = x.transpose(0, 1).unsqueeze(0)
+        x = self.group_norm(x)
+        x = x.squeeze(0).transpose(0, 1)
         x = self.activation(self.ret_feat(x))
 
         return x.view(num_node, -1)
