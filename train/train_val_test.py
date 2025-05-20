@@ -2,7 +2,7 @@ import torch
 import csv as csv
 import torch.nn.functional as F
 import torch.distributions
-from graph_dataset_gen import Mydataset
+from graph_dataset_gen import MyDataset, MultiIndexDataset
 from Multi_GDNN import MGDPR
 from sklearn.metrics import matthews_corrcoef, f1_score
 
@@ -32,10 +32,16 @@ for idx, path in enumerate(com_path):
             com_list[idx].append(line[0])  # append first element of line if each line is a list
 NYSE_com_list = [com for com in NYSE_com_list if com not in NYSE_missing_list]
 
-# Generate datasets
-train_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 19, dataset_type[0])
-validation_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 19, dataset_type[0])
-test_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 19, dataset_type[0])
+# Path to the combined multi-index CSV file (ticker, date as indices)
+multi_csv_path = '/path/to/multiindex.csv'
+
+# Generate datasets using the MultiIndexDataset to avoid look-ahead bias
+train_dataset = MultiIndexDataset(multi_csv_path, des, NASDAQ_com_list,
+                                  sedate[0], sedate[1], 19, dataset_type[0])
+validation_dataset = MultiIndexDataset(multi_csv_path, des, NASDAQ_com_list,
+                                       val_sedate[0], val_sedate[1], 19, dataset_type[1])
+test_dataset = MultiIndexDataset(multi_csv_path, des, NASDAQ_com_list,
+                                 test_sedate[0], test_sedate[1], 19, dataset_type[2])
 
 # Define model (these can be tuned)
 n = len(NASDAQ_com_list) # number of companies in NASDAQ

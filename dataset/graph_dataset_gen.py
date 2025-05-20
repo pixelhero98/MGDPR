@@ -97,15 +97,19 @@ class MyDataset(Dataset):
         return entropy
 
     def adjacency_matrix(self, X: torch.Tensor) -> torch.Tensor:
+        """Compute adjacency matrix based on signal energy and information entropy."""
         A = torch.zeros((X.shape[0], X.shape[0]))
-        X = X.numpy()
-        energy = np.array([self.signal_energy(tuple(x)) for x in X])
-        entropy = np.array([self.information_entropy(tuple(x)) for x in X])
-        for i in range(X.shape[0]):
-            for j in range(X.shape[0]):
-                A[i, j] = torch.tensor((energy[i] / energy[j]) * (math.exp(entropy[i] - entropy[j])), dtype=torch.float32)
-        
-        return torch.log(A[A<1] = 1)
+        X_np = X.numpy()
+        energy = np.array([self.signal_energy(tuple(x)) for x in X_np])
+        entropy = np.array([self.information_entropy(tuple(x)) for x in X_np])
+        for i in range(X_np.shape[0]):
+            for j in range(X_np.shape[0]):
+                val = (energy[i] / energy[j]) * math.exp(entropy[i] - entropy[j])
+                A[i, j] = torch.tensor(val, dtype=torch.float32)
+
+        # Avoid log(0) by ensuring values are at least 1 before taking log
+        A[A < 1] = 1
+        return torch.log(A)
 
     def node_feature_matrix(self, dates: List[str], comlist: List[str], market: str, path: str) -> torch.Tensor:
         # Convert dates to datetime format for easier comparison
@@ -170,5 +174,120 @@ class MyDataset(Dataset):
                 A[j] = self.adjacency_matrix(X[j])
 
             # Save the X, A, C tensors
+            os.makedirs(directory_path, exist_ok=True)
+            torch.save({'X': X, 'A': A, 'Y': C}, filename)
+
+
+class MultiIndexDataset(Dataset):
+    """Dataset handler for a single CSV file with a MultiIndex of ticker and date."""
+
+    def __init__(self, csv_path: str, desti: str, comlist: List[str], start: str,
+                 end: str, window: int, dataset_type: str):
+        super().__init__()
+
+        self.csv_path = csv_path
+        self.desti = desti
+        self.comlist = comlist
+        self.start = pd.to_datetime(start)
+        self.end = pd.to_datetime(end)
+        self.window = window
+        self.dataset_type = dataset_type
+
+        # Load CSV with ticker/date as MultiIndex
+        df = pd.read_csv(self.csv_path)
+        df.columns = [c.strip().lower() for c in df.columns]
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index(['ticker', 'date'], inplace=True)
+        df.sort_index(inplace=True)
+        self.df = df
+
+        self.dates, self.next_day = self.find_dates_multiindex()
+
+        directory_path = os.path.join(
+            self.desti,
+            f'multi_{self.dataset_type}_{start}_{end}_{window}'
+        )
+        graph_files_exist = all(
+            os.path.exists(os.path.join(directory_path, f'graph_{i}.pt'))
+            for i in range(len(self.dates) - self.window + 1)
+        )
+
+        if not graph_files_exist:
+            self._create_graphs_multiindex(self.dates, directory_path)
+
+    def __len__(self) -> int:
+        return len(self.dates) - self.window + 1
+
+    def __getitem__(self, idx: int):
+        directory_path = os.path.join(
+            self.desti,
+            f'multi_{self.dataset_type}_{self.start.date()}_{self.end.date()}_{self.window}'
+        )
+        data_path = os.path.join(directory_path, f'graph_{idx}.pt')
+        if os.path.exists(data_path):
+            return torch.load(data_path)
+        raise FileNotFoundError(
+            f"No graph data found for index {idx}. Please generate the required data."
+        )
+
+    def find_dates_multiindex(self) -> Tuple[List[str], str]:
+        date_sets = []
+        after_end_sets = []
+        for ticker in self.comlist:
+            df_ticker = self.df.loc[ticker]
+            in_range = df_ticker.loc[(df_ticker.index >= self.start) & (df_ticker.index <= self.end)]
+            after_end = df_ticker.loc[df_ticker.index > self.end]
+            date_sets.append(set(in_range.index.strftime('%Y-%m-%d')))
+            after_end_sets.append(set(after_end.index.strftime('%Y-%m-%d')))
+
+        common_dates = sorted(set.intersection(*date_sets))
+        next_common_day = None
+        if after_end_sets:
+            common_after = set.intersection(*after_end_sets)
+            if common_after:
+                next_common_day = min(common_after)
+        return common_dates, next_common_day
+
+    def node_feature_matrix_multiindex(self, dates: List[str]) -> torch.Tensor:
+        dates_dt = [pd.to_datetime(d).date() for d in dates]
+        num_feat = 5
+        X = torch.zeros((num_feat, len(self.comlist), len(dates_dt)))
+
+        for idx, ticker in enumerate(self.comlist):
+            df_ticker = self.df.loc[ticker]
+            df_filtered = df_ticker.loc[df_ticker.index.isin(dates_dt)]
+            numeric_cols = df_filtered.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) < num_feat:
+                raise ValueError('Not enough numerical columns in dataframe')
+            df_selected = df_filtered[numeric_cols[:num_feat]].transpose()
+            X[:, idx, :] = torch.from_numpy(df_selected.to_numpy())
+
+        return X
+
+    def _create_graphs_multiindex(self, dates: List[str], directory_path: str):
+        if self.next_day:
+            dates = dates + [self.next_day]
+
+        for i in tqdm(range(len(dates) - self.window)):
+            filename = os.path.join(directory_path, f'graph_{i}.pt')
+            if os.path.exists(filename):
+                print(f"Graph {i + 1}/{len(dates) - self.window} already exists, skipping...")
+                continue
+
+            box = dates[i:i + self.window + 1]
+            X = self.node_feature_matrix_multiindex(box)
+            C = torch.zeros(X.shape[1])
+            for j in range(C.shape[0]):
+                if X[3, j, -1] - X[3, j, -2] > 0:
+                    C[j] = 1
+
+            X = X[:, :, :-1]
+            for k in range(X.shape[0]):
+                X[k] = torch.tensor(np.log1p(X[k].numpy()))
+
+            A = torch.zeros((X.shape[0], X.shape[1], X.shape[1]))
+            for j in range(A.shape[0]):
+                A[j] = self.adjacency_matrix(X[j])
+
             os.makedirs(directory_path, exist_ok=True)
             torch.save({'X': X, 'A': A, 'Y': C}, filename)
