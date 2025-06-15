@@ -1,14 +1,13 @@
 import torch
 import torch.nn as nn
 from torch import Tensor
-from typing import Tuple
 
 class MultiReDiffusion(nn.Module):
     """
     A multi-relation diffusion module that:
       1. Computes per-relation diffused node features via weighted adjacency.
       2. Applies a relation-specific linear transform.
-      3. Mixes information across relations with a 1×1 convolution.
+      3. Mixes information across relations with a 1×1 convolution and aggregates across relations.
 
     Args:
         input_dim: Dimensionality of input node features D_in.
@@ -43,46 +42,52 @@ class MultiReDiffusion(nn.Module):
 
     def forward(
         self,
-        theta: Tensor,    # [R, S]
-        t:     Tensor,    # [R, S]
-        a:     Tensor,    # [R, N, N]
-        x:     Tensor     # [R, N, D_in]
-    ) -> Tuple[Tensor, Tensor]:
+        gamma: Tensor,    # [R, S] unnormalized per-relation weights over diffusion steps
+        T:     Tensor,    # [R, S] time-dependent scalars
+        a:     Tensor,    # [R, N, N] adjacency matrices
+        x:     Tensor     # [N, D_in] node feature matrix
+    ) -> Tensor:
         """
+        Args:
+            gamma: Unnormalized relation weights over S diffusion steps ([R, S]).
+                   Will be normalized per relation via softmax over steps (dim=1).
+            T:     Time-dependent scalars ([R, S]).
+            a:     Adjacency matrices ([R, N, N]).
+            x:     Node feature matrix ([N, D_in]), shared across relations.
+
         Returns:
-            mixed_features: [R, N, D_out]   # after cross-relation mixing
-            diffused_feats: [R, N, D_out]   # per-relation diffused outputs
+            aggregated_features: [N, D_out] matrix after mixing and summing over relations.
         """
-        R, S = theta.shape
-        # Dimension checks
-        assert t.shape == (R, S), f"Expected t.shape==(R,S)={(R,S)}, got {tuple(t.shape)}"
-        assert a.shape[0] == R, f"Expected a first dim R={R}, got {a.shape[0]}"
-        assert x.shape[0] == R, f"Expected x first dim R={R}, got {x.shape[0]}"
+        R, S = gamma.shape
+        N, D_in = x.shape
+        assert T.shape == (R, S), f"Expected T.shape==(R,S)={(R,S)}, got {tuple(T.shape)}"
+        assert a.shape == (R, N, N), f"Expected a.shape==(R,N,N)=({R},{N},{N}), got {tuple(a.shape)}"
 
-        device = theta.device
+        # Normalize gamma per relation so that for each relation r, sum_s gamma[r,s] == 1
+        gamma = torch.softmax(gamma, dim=1)
 
-        # --- 1) Compute weighted adjacency per relation ---
-        # weights: [R, S, 1, 1]
-        weights = (theta * t).unsqueeze(-1).unsqueeze(-1)
-        # diffusion_mats: [R, N, N]
+        # 1) Compute weighted adjacency per relation: [R, N, N]
+        weights = (gamma * T).unsqueeze(-1).unsqueeze(-1)
         diffusion_mats = (weights * a.unsqueeze(1)).sum(dim=1)
 
-        # --- 2) Diffuse input features ---
-        # diff_feats: [R, N, D_in]
-        diff_feats = torch.einsum("rnm,rmd->rnd", diffusion_mats, x)
+        # 2) Diffuse features: [R, N, D_in]
+        # x is [N, D_in], diffusion_mats is [R, N, N]
+        diff_feats = torch.einsum("rnm,md->rnd", diffusion_mats, x)
 
-        # Apply per-relation linear only: [R, N, D_out]
-        diffused_feats = torch.stack([
+        # 3) Per-relation transform: [R, N, D_out]
+        diffused = torch.stack([
             self.fc_layers[r](diff_feats[r])
             for r in range(R)
         ], dim=0)
 
-        # --- 3) Cross-relation mixing via 1×1 conv ---
-        # Expand to [1, R, N, D_out]
-        expanded = diffused_feats.unsqueeze(0)
-        mixed = self.relation_mixer(expanded)
+        # 4) Cross-relation mixing: [1, R, N, D_out]
+        mixed = self.relation_mixer(diffused.unsqueeze(0))
         mixed = self.mixer_act(mixed)
-        # Reshape back to [R, N, D_out]
-        mixed_features = mixed.reshape(R, diffused_feats.shape[1], self.output_dim)
+        # Reshape to [R, N, D_out]
+        mixed = mixed.reshape(R, N, self.output_dim)
 
-        return mixed_features, diffused_feats
+        # 5) Aggregate across relations: [N, D_out]
+        aggregated_features = mixed.sum(dim=0)
+
+        return aggregated_features
+
