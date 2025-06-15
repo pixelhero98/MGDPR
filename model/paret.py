@@ -15,44 +15,55 @@ class ParallelRetention(nn.Module):
         self.hidden_dim = out_dim
         self.out_dim = out_dim
 
-        # Activation
-        self.activation = nn.GELU()
+        # Activations
+        self.ret_activation = nn.GELU()
+        self.cat_activation = nn.PReLU(num_parameters=self.out_dim)
 
         # Linear projections
         self.Q_layers = nn.Linear(self.in_dim, self.inter_dim)
         self.K_layers = nn.Linear(self.in_dim, self.inter_dim)
         self.V_layers = nn.Linear(self.in_dim, self.inter_dim)
         self.ret_feat = nn.Linear(self.inter_dim, self.hidden_dim)
-        self.ret_proj = nn.Linear(self.hidden_dim, self.out_dim)
+        self.cat_feat = nn.Linear(self.out_dim, self.hidden_dim)
+        self.ret_proj = nn.Linear(2 * self.hidden_dim, self.out_dim)
 
         # GroupNorm after activation
         # num_groups should divide out_dim
         self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=self.out_dim)
 
-    def forward(self, x: torch.Tensor, D: torch.Tensor) -> torch.Tensor:
+    def forward(self, h: torch.Tensor, D: torch.Tensor, h_prime: torch.Tensor) -> torch.Tensor:
         """
-        x: Tensor of shape (N, in_dim)
+        h: Tensor of shape (N, in_dim)
         D: Tensor of shape (N, N) for scaling feature interactions
+        h_prime: Tensor of shape (N, out_dim) to concatenate
         returns: Tensor of shape (N, out_dim)
         """
-        # Ensure D is on the same device
-        D = D.to(x.device)
+        # Ensure D is on the same device as h
+        D = D.to(h.device)
 
-        # Projections
-        Q = self.Q_layers(x)  # (N, inter_dim)
-        K = self.K_layers(x)  # (N, inter_dim)
-        V = self.V_layers(x)  # (N, inter_dim)
+        # Compute Q, K, V projections
+        Q = self.Q_layers(h)  # (N, inter_dim)
+        K = self.K_layers(h)  # (N, inter_dim)
+        V = self.V_layers(h)  # (N, inter_dim)
 
         # Compute pairwise interactions: (N, N)
         inter_feat = Q @ K.transpose(0, 1)
 
         # Retention operation: (D * inter_feat) @ V -> (N, inter_dim)
-        x_ret = (D * inter_feat) @ V
+        h_ret = (D * inter_feat) @ V
 
-        # Project to output dim and activate
-        x_out = self.ret_feat(x_ret)
-        x_out = self.activation(x_out)
-        x_out = self.ret_proj(x_out)
+        # Project and activate retention features
+        h_ret = self.ret_feat(h_ret)
+        h_ret = self.ret_activation(h_ret)
+
+        # Transform h_prime
+        h_cat = self.cat_feat(h_prime)
+
+        # Concatenate retention and prime, project and activate
+        combined = torch.cat((h_ret, h_cat), dim=-1)  # (N, 2*hidden_dim)
+        x_out = self.ret_proj(combined)
+        x_out = self.cat_activation(x_out)
+
         # Apply GroupNorm
         x_out = self.group_norm(x_out)
 
