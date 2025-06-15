@@ -1,8 +1,3 @@
-import torch
-import torch.nn as nn
-from paret import ParallelRetention
-from mgd   import MultiReDiffusion
-
 class MGDPR(nn.Module):
     def __init__(self,
                  num_nodes:         int,
@@ -21,7 +16,7 @@ class MGDPR(nn.Module):
         assert len(diffusion_dims) == len(ret_in_dim) + 1
         assert len(ret_in_dim) == len(ret_inter_dim) == len(ret_hidden_dim) == len(ret_out_dim)
         self.layers = len(ret_in_dim)
-
+        self.num_nodes = num_nodes
         # Transition tensor T: (layers, R, S, N, N)
         self.T = nn.Parameter(torch.empty(self.layers,
                                            num_relation,
@@ -56,7 +51,7 @@ class MGDPR(nn.Module):
         )
 
         # Raw feature projection (proj x → first retention input)
-        self.raw_feat = nn.Linear(num_relation * diffusion_dims[0], ret_in_dim[0])
+        self.raw_feat = nn.Linear(diffusion_dims[0], ret_out_dim[0])
 
         # Post-processing MLP
         self.mlp = nn.ModuleList(
@@ -78,19 +73,19 @@ class MGDPR(nn.Module):
         a: adjacency or relation tensor
         """
         # Initial graph repr
-        x = x.reshape(x.shape[1], -1)
+        x = x.reshape(self.num_nodes, -1)
         h = x
 
         for idx, (diff, ret) in enumerate(zip(self.diffusion_layers,
                                               self.retention_layers)):
             # MultiReDiffusion might return (h_new, u); adjust if so
             h = diff(self.gamma[idx], self.T[idx], a, h)
-
             if idx == 0:
                 # first retention sees raw_feat(x)
                 h_prime = ret(h, self.D, self.raw_feat(x))
             else:
                 h_prime = ret(h, self.D, h_prime)
+
 
         # Post-MLP
         out = h_prime
