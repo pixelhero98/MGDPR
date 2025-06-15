@@ -3,7 +3,7 @@ import csv as csv
 import torch.nn.functional as F
 import torch.distributions
 from graph_dataset_gen import Mydataset
-from Multi_GDNN import MGDPR
+from multi_gdn import MGDPR
 from sklearn.metrics import matthews_corrcoef, f1_score
 
 # Configure the device for running the model on GPU or CPU
@@ -32,68 +32,31 @@ for idx, path in enumerate(com_path):
             com_list[idx].append(line[0])  # append first element of line if each line is a list
 NYSE_com_list = [com for com in NYSE_com_list if com not in NYSE_missing_list]
 
+num_nodes, time_steps, num_relation, zeta, diffusion_steps = len(NASDAQ_com_list), 21, 5, 1.001, 7 # zeta = 1.27 sometimes results in nan in objective value, using a smaller one helps training without sacrificing performance.
+
 # Generate datasets
-train_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 19, dataset_type[0])
-validation_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 19, dataset_type[0])
-test_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], 19, dataset_type[0])
-
-# Define model (these can be tuned)
-n = len(NASDAQ_com_list) # number of companies in NASDAQ
-
-d_layers, num_nodes, time_steps, num_relation, gamma, diffusion_steps = 6, n, 21, 5, 2.5e-4, 7
-
-diffusion_layers = [time_steps, 3 * time_steps, 4 * time_steps, 5 * time_steps, 5 * time_steps, 6 * time_steps, 5 * time_steps]
-
-retention_layers = [num_relation*3*n, num_relation*5*n, num_relation*4*n,
-                    num_relation*4*n, num_relation*5*n, num_relation*5*n,
-                    num_relation*5*n, num_relation*5*n, num_relation*5*n,
-                    num_relation*5*n, num_relation*5*n, num_relation*5*n,
-                    num_relation*6*n, num_relation*5*n, num_relation*5*n,
-                    num_relation*5*n, num_relation*5*n, num_relation*5*n]
-
-
-ret_linear_layers_1 = [time_steps * num_relation, time_steps * num_relation,
-                     time_steps * num_relation * 5, time_steps * num_relation,
-                     time_steps * num_relation * 6, time_steps * num_relation,
-                     time_steps * num_relation * 6, time_steps * num_relation,
-                     time_steps * num_relation * 6, time_steps * num_relation,
-                     time_steps * num_relation * 6, time_steps * num_relation]
-
-
-ret_linear_layers_2 = [time_steps * num_relation * 5, time_steps * num_relation * 5,
-                     time_steps * num_relation * 6, time_steps * num_relation * 6,
-                     time_steps * num_relation * 6, time_steps * num_relation * 6,
-                     time_steps * num_relation * 6, time_steps * num_relation * 6,
-                     time_steps * num_relation * 6, time_steps * num_relation * 6,
-                     time_steps * num_relation * 6, time_steps * num_relation * 6]
-
-mlp_layers = [num_relation * 5 * time_steps + time_steps * num_relation, 128, 2]
+train_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], time_steps, dataset_type[0])
+validation_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], time_steps, dataset_type[0])
+test_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], time_steps, dataset_type[0])
 
 # Define model
-model = MGDPR(diffusion_layers, retention_layers, ret_linear_layers_1, ret_linear_layers_2, mlp_layers, d_layers,
-              num_nodes, time_steps, num_relation, gamma, diffusion_steps)
+diffusion_dims = [105, 128, 256, 512, 512, 512, 256, 128, 64]
+ret_in_dim = [128, 256, 512, 512, 512, 256, 128, 64]
+ret_inter_dim = [512, 512, 512, 512, 512, 512, 512, 512]
+ret_hidden_dim = [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024]
+ret_out_dim = [256, 256, 256, 256, 256, 256, 256, 256]
+post_pro = [256, 64, 2]
+
+# Define model
+model = MGDPR(num_nodes, diffusion_dims, ret_in_dim, ret_inter_dim, ret_hidden_dim, ret_out_dim,
+              post_pro, num_relation, diffusion_steps, zeta)
 
 # Pass model and datasets to GPU
 model = model.to(device)
-
-# Define optimizer and objective function
-
-
-def theta_regularizer(theta):
-    row_sums = torch.sum(theta.to(device), dim=-1)
-    ones = torch.ones_like(row_sums)
-    return torch.sum(torch.abs(row_sums - ones))
-
-
-#def D_gamma_regularizer(D_gamma):
-    #upper_tri = torch.triu(D_gamma, diagonal=1)
-    #return torch.sum(torch.abs(upper_tri))
-
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4)
 
 # Define training process & validation process & testing process
 epochs = 10000
-model.reset_parameters()
 
 # Training and validating
 for epoch in range(epochs):
@@ -117,10 +80,10 @@ for epoch in range(epochs):
 
     # If performance progress of the model is required
         out = out.argmax(dim=1)
-        correct += int((out == C).sum()).item()
+        correct += int((out == C).sum())
         total += C.shape[0]
-        if epoch % 1 == 0:
-          print(f"Epoch {epoch}: loss={objective_total:.4f}, acc={correct / total:.4f}")
+    if epoch % 1 == 0:
+        print(f"Epoch {epoch}: loss={objective_total:.4f}, acc={correct / total:.4f}")
 
 # Validation
 model.eval()
