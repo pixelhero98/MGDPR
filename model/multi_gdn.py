@@ -36,13 +36,12 @@ class MGDPR(nn.Module):
         # Initialize transition parameters
         self._init_transition_params()
 
-        # Lower-triangular decay buffer D: (N, N)
-        N = num_nodes
-        lower_tri = torch.tril(torch.ones(N, N), diagonal=-1).long()
-        D = torch.where(lower_tri == 0,
-                        lower_tri.new_zeros(()),
-                        (zeta ** -lower_tri).to(lower_tri.dtype))
-        self.register_buffer('D', D)
+                # Precompute decay buffer D: D[i,j] = zeta^(i-j) for i>j, else 0
+        idx = torch.arange(num_nodes)
+        i, j = torch.meshgrid(idx, idx, indexing='ij')
+        diff = i - j
+        D = (zeta ** diff) * (diff > 0)
+        self.register_buffer('D', D.float())
 
         # Diffusion and Retention modules
         self.diffusion_layers = nn.ModuleList(
