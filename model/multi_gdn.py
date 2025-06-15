@@ -56,7 +56,7 @@ class MGDPR(nn.Module):
         )
 
         # Raw feature projection (proj x → first retention input)
-        self.raw_feat = nn.Linear(diffusion_dims[0], ret_in_dim[0])
+        self.raw_feat = nn.Linear(num_relation * diffusion_dims[0], ret_in_dim[0])
 
         # Post-processing MLP
         self.mlp = nn.ModuleList(
