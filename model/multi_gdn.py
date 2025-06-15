@@ -26,8 +26,8 @@ class MGDPR(nn.Module):
         self.T = nn.Parameter(torch.empty(self.layers,
                                            num_relation,
                                            expansion_steps,
-                                           diffusion_dims[0],
-                                           diffusion_dims[0]))
+                                           num_nodes,
+                                           num_nodes))
         # Diffusion weighting gamma: (layers, R, S)
         self.gamma = nn.Parameter(torch.empty(self.layers,
                                               num_relation,
