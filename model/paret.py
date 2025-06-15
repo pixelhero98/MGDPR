@@ -6,13 +6,14 @@ class ParallelRetention(nn.Module):
         self,
         in_dim: int,
         inter_dim: int,
+        hidden_dim: int,
         out_dim: int,
         num_groups: int = 16
     ):
         super(ParallelRetention, self).__init__()
         self.in_dim = in_dim
         self.inter_dim = inter_dim
-        self.hidden_dim = out_dim
+        self.hidden_dim = hidden_dim
         self.out_dim = out_dim
 
         # Activations
