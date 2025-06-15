@@ -5,7 +5,7 @@ from torch import Tensor
 class MultiReDiffusion(nn.Module):
     """
     A multi-relation diffusion module that:
-      1. Computes per-relation diffused node features via weighted adjacency.
+      1. Computes per-relation diffused node features via weighted diffusion matrices.
       2. Applies a relation-specific linear transform.
       3. Mixes information across relations with a 1×1 convolution and aggregates across relations.
 
@@ -22,6 +22,7 @@ class MultiReDiffusion(nn.Module):
     ):
         super().__init__()
         self.num_relations = num_relations
+        self.input_dim = input_dim
         self.output_dim = output_dim
 
         # Per-relation linear transformations
@@ -43,16 +44,16 @@ class MultiReDiffusion(nn.Module):
     def forward(
         self,
         gamma: Tensor,    # [R, S] unnormalized per-relation weights over diffusion steps
-        T:     Tensor,    # [R, S] time-dependent scalars
-        a:     Tensor,    # [R, N, N] adjacency matrices
+        T:     Tensor,    # [R, S, N, N] diffusion matrices per step and relation
+        a:     Tensor,    # [R, N, N] adjacency matrices per relation
         x:     Tensor     # [N, D_in] node feature matrix
     ) -> Tensor:
         """
         Args:
-            gamma: Unnormalized relation weights over S diffusion steps ([R, S]).
+            gamma: Unnormalized weights over S diffusion steps for each relation ([R, S]).
                    Will be normalized per relation via softmax over steps (dim=1).
-            T:     Time-dependent scalars ([R, S]).
-            a:     Adjacency matrices ([R, N, N]).
+            T:     Diffusion step matrices ([R, S, N, N]).
+            a:     Adjacency matrices per relation ([R, N, N]).
             x:     Node feature matrix ([N, D_in]), shared across relations.
 
         Returns:
@@ -60,34 +61,35 @@ class MultiReDiffusion(nn.Module):
         """
         R, S = gamma.shape
         N, D_in = x.shape
-        assert T.shape == (R, S), f"Expected T.shape==(R,S)={(R,S)}, got {tuple(T.shape)}"
+        assert T.shape == (R, S, N, N), f"Expected T.shape==(R,S,N,N)=({R},{S},{N},{N}), got {tuple(T.shape)}"
         assert a.shape == (R, N, N), f"Expected a.shape==(R,N,N)=({R},{N},{N}), got {tuple(a.shape)}"
+        assert D_in == self.input_dim, f"Expected x.shape[1]==input_dim={self.input_dim}, got {D_in}"
 
-        # Normalize gamma per relation so that for each relation r, sum_s gamma[r,s] == 1
-        gamma = torch.softmax(gamma, dim=1)
+        # Normalize gamma per relation so that for each r, sum_s gamma[r,s] == 1
+        gamma_norm = torch.softmax(gamma, dim=1)  # [R, S]
 
-        # 1) Compute weighted adjacency per relation: [R, N, N]
-        weights = (gamma * T).unsqueeze(-1).unsqueeze(-1)
-        diffusion_mats = (weights * a.unsqueeze(1)).sum(dim=1)
+        # 1) Combine step matrices into per-relation diffusion: [R, N, N]
+        weighted_steps = gamma_norm.view(R, S, 1, 1) * T  # [R, S, N, N]
+        combined_diff = weighted_steps.sum(dim=1)         # [R, N, N]
 
-        # 2) Diffuse features: [R, N, D_in]
-        # x is [N, D_in], diffusion_mats is [R, N, N]
+        # 2) Apply adjacency mask: [R, N, N]
+        diffusion_mats = combined_diff * a
+
+        # 3) Diffuse features: [R, N, D_in]
         diff_feats = torch.einsum("rnm,md->rnd", diffusion_mats, x)
 
-        # 3) Per-relation transform: [R, N, D_out]
+        # 4) Per-relation transform: [R, N, D_out]
         diffused = torch.stack([
             self.fc_layers[r](diff_feats[r])
             for r in range(R)
         ], dim=0)
 
-        # 4) Cross-relation mixing: [1, R, N, D_out]
+        # 5) Cross-relation mixing: [1, R, N, D_out]
         mixed = self.relation_mixer(diffused.unsqueeze(0))
         mixed = self.mixer_act(mixed)
-        # Reshape to [R, N, D_out]
-        mixed = mixed.reshape(R, N, self.output_dim)
+        mixed = mixed.reshape(R, N, self.output_dim)  # [R, N, D_out]
 
-        # 5) Aggregate across relations: [N, D_out]
+        # 6) Aggregate across relations: [N, D_out]
         aggregated_features = mixed.sum(dim=0)
 
         return aggregated_features
-
