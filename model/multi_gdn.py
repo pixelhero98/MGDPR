@@ -78,6 +78,7 @@ class MGDPR(nn.Module):
         a: adjacency or relation tensor
         """
         # Initial graph repr
+        x = x.reshape(x.shape[1], -1)
         h = x
 
         for idx, (diff, ret) in enumerate(zip(self.diffusion_layers,
