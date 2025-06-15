@@ -1,88 +1,107 @@
 import torch
 import torch.nn as nn
 from paret import ParallelRetention
-from mgd import MultiReDiffusion
+from mgd   import MultiReDiffusion
 
 class MGDPR(nn.Module):
-    def __init__(self, diffusion, ret_in_dim, ret_inter_dim, ret_hidden_dim, ret_out_dim, post_pro, 
-                 layers, num_nodes, num_relation, expansion_steps, zeta):
-        super(MGDPR, self).__init__()
-        
-        self.layers = layers
-        
-        # Learnable parameters for multi-relational transitions:
-        # T is used as a transition (or weighting) tensor.
-        # Initialized using standard Xavier uniform initialization.
-        self.T = nn.Parameter(torch.empty(layers, num_relation, expansion_steps, num_nodes, num_nodes))
-        nn.init.xavier_uniform_(self.T)
-        
-        # Theta is used for weighting coefficients in the diffusion process.
-        self.gamma = nn.Parameter(torch.empty(layers, num_relation, expansion_steps))
-        nn.init.xavier_uniform_(self.theta)
-        
-        # Create a lower triangular mask. Only positions with lower_tri != 0 (i.e., strictly lower triangular)
-        # will be assigned a decay value computed as zeta ** -lower_tri.
-        lower_tri = torch.tril(torch.ones(num_nodes, num_nodes), diagonal=-1)
-        D = torch.where(lower_tri == 0, torch.tensor(0.0), zeta ** -lower_tri)
-        # Register as a buffer so it moves with the model's device and is saved/loaded with state_dict.
+    def __init__(self,
+                 num_nodes:         int,
+                 diffusion_dims:    list[int],
+                 ret_in_dim:        list[int],
+                 ret_inter_dim:     list[int],
+                 ret_hidden_dim:    list[int],
+                 ret_out_dim:       list[int],
+                 post_pro:          list[int],
+                 num_relation:      int,
+                 expansion_steps:   int,
+                 zeta:              float):
+        super().__init__()
+
+        # Derive number of layers
+        assert len(diffusion_dims) == len(ret_in_dim) + 1
+        assert len(ret_in_dim) == len(ret_inter_dim) == len(ret_hidden_dim) == len(ret_out_dim)
+        self.layers = len(ret_in_dim)
+
+        # Transition tensor T: (layers, R, S, N, N)
+        self.T = nn.Parameter(torch.empty(self.layers,
+                                           num_relation,
+                                           expansion_steps,
+                                           diffusion_dims[0],
+                                           diffusion_dims[0]))
+        # Diffusion weighting gamma: (layers, R, S)
+        self.gamma = nn.Parameter(torch.empty(self.layers,
+                                              num_relation,
+                                              expansion_steps))
+
+        # Initialize transition parameters
+        self._init_transition_params()
+
+        # Lower-triangular decay buffer D: (N, N)
+        N = num_nodes
+        lower_tri = torch.tril(torch.ones(N, N), diagonal=-1).long()
+        D = torch.where(lower_tri == 0,
+                        lower_tri.new_zeros(()),
+                        (zeta ** -lower_tri).to(lower_tri.dtype))
         self.register_buffer('D', D)
-        
-        # Initialize Multi-relational Graph Diffusion layers.
+
+        # Diffusion and Retention modules
         self.diffusion_layers = nn.ModuleList(
-            [MultiReDiffusion(diffusion[i], diffusion[i + 1], num_relation) 
-             for i in range(len(diffusion) - 1)]
+            MultiReDiffusion(in_dim, out_dim, num_relation)
+            for in_dim, out_dim in zip(diffusion_dims[:-1],
+                                       diffusion_dims[1:])
         )
-        
-        # Initialize Parallel Retention layers.
         self.retention_layers = nn.ModuleList(
-            [ParallelRetention(ret_in_dim[i], ret_inter_dim[i], ret_hidden_dim[i], ret_out_dim[i]) 
-             for i in range(len(retention))]
+            ParallelRetention(in_dim, i_dim, h_dim, o_dim)
+            for in_dim, i_dim, h_dim, o_dim
+            in zip(ret_in_dim, ret_inter_dim, ret_hidden_dim, ret_out_dim)
         )
-        
-        # MLP layers for post-processing.
+
+        # Raw feature projection (proj x → first retention input)
+        self.raw_feat = nn.Linear(diffusion_dims[0], ret_in_dim[0])
+
+        # Post-processing MLP
         self.mlp = nn.ModuleList(
-            [nn.Linear(post_pro[i], post_pro[i + 1]) for i in range(len(post_pro) - 1)]
+            nn.Linear(a, b) for a, b in zip(post_pro[:-1], post_pro[1:])
         )
 
-        self.raw_feat = nn.Linear(diffusion[0], ret_out_dim)
-    
-    def forward(self, x, a):
+    def _init_transition_params(self):
         """
-        x: input tensor (e.g., node features); expected shape should be (batch_size, num_nodes, feature_dim)
-        a: adjacency (or relation) information for graph diffusion.
+        Initialize transition parameters:
+        - T with Xavier uniform
+        - gamma with constant normalized values
         """
-
-        # Information diffusion and graph representation learning
-        for l in range(self.layers):
-            # Multi-relational Graph Diffusion layer:
-            # The diffusion layer returns updated h and an intermediate representation u.
-            h = self.diffusion_layers[l](self.gamma[l], self.T[l], a, h)
-            
-            # Parallel Retention layer:
-            if l == 0:
-                h_prime = self.retention_layers[l](h, self.D, self.raw_feat(x))
-            else:
-                h_prime = self.retention_layers[l](h, self.D, h_prime)
-                                                   
-        # Post-processing with MLP layers to generate final graph representation.
-        for mlp_layer in self.mlp:
-            h_prime = mlp_layer(h_prime)
-            
-        return h_prime
-    
-    
-    def reset_parameters(self):
-        """
-        Reset learnable model parameters using appropriate initialization methods.
-        Note that D_gamma is not learnable and is registered as a buffer.
-        """
-        # Reinitialize T and theta with Xavier uniform initialization.
         nn.init.xavier_uniform_(self.T)
-        nn.init.xavier_uniform_(self.theta)
-        
-        # Optionally, you could also reset the parameters of the submodules.
-        for module in self.modules():
-            if hasattr(module, 'reset_parameters') and module not in [self]:
-                module.reset_parameters()
+        nn.init.constant_(self.gamma, 1.0 / self.gamma.size(-1))
 
+    def forward(self, x: torch.Tensor, a: torch.Tensor):
+        """
+        x: (batch, N, F_in)
+        a: adjacency or relation tensor
+        """
+        # Initial graph repr
+        h = x
 
+        for idx, (diff, ret) in enumerate(zip(self.diffusion_layers,
+                                              self.retention_layers)):
+            # MultiReDiffusion might return (h_new, u); adjust if so
+            h = diff(self.gamma[idx], self.T[idx], a, h)
+
+            if idx == 0:
+                # first retention sees raw_feat(x)
+                h_prime = ret(h, self.D, self.raw_feat(x))
+            else:
+                h_prime = ret(h, self.D, h_prime)
+
+        # Post-MLP
+        out = h_prime
+        for layer in self.mlp:
+            out = layer(out)
+
+        return out
+
+    def reset_parameters(self):
+        """Reinitialize all parameters."""
+        self._init_transition_params()
+        for m in self.modules():
+            if m is not self and hasattr(m, 'reset_parameters'):
+                m.reset_parameters()
