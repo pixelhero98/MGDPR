@@ -60,11 +60,11 @@ class MultiReDiffusion(nn.Module):
             aggregated_features: [N, D_out] matrix after mixing and summing over relations.
         """
         R, S = gamma.shape
-        N, D_in = x.shape
+        N, _ = x.shape
         assert T.shape == (R, S, N, N), f"Expected T.shape==(R,S,N,N)=({R},{S},{N},{N}), got {tuple(T.shape)}"
         assert a.shape == (R, N, N), f"Expected a.shape==(R,N,N)=({R},{N},{N}), got {tuple(a.shape)}"
-        assert D_in == self.input_dim, f"Expected x.shape[1]==input_dim={self.input_dim}, got {D_in}"
 
+        x = x.reshape(N, -1)
         # Normalize gamma per relation so that for each r, sum_s gamma[r,s] == 1
         gamma_norm = torch.softmax(gamma, dim=1)  # [R, S]
 
