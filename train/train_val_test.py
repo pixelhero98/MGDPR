@@ -40,7 +40,7 @@ validation_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedat
 test_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], time_steps, dataset_type[0])
 
 # Define model
-diffusion_dims = [105, 128, 256, 512, 512, 512, 256, 128, 64]
+diffusion_dims = [num_relation * time_steps, 128, 256, 512, 512, 512, 256, 128, 64]
 ret_in_dim = [128, 256, 512, 512, 512, 256, 128, 64]
 ret_inter_dim = [512, 512, 512, 512, 512, 512, 512, 512]
 ret_hidden_dim = [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024]
