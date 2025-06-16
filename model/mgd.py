@@ -39,7 +39,7 @@ class MultiReDiffusion(nn.Module):
         )
 
         # Activation after mixing
-        self.mixer_act = nn.PReLU()
+        self.mixer_act = nn.PReLU(num_parameters=num_relations)
 
     def forward(
         self,
