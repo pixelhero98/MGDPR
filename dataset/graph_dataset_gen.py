@@ -1,174 +1,158 @@
-from scipy.linalg import expm
-import torch
-import csv
 import os
+import csv
+import torch
 import numpy as np
-import random
-import sklearn.preprocessing as skp
-from torch.utils.data import Dataset
 import pandas as pd
 from datetime import datetime
-from typing import List, Tuple
 from functools import lru_cache
+from torch.utils.data import Dataset
 from tqdm import tqdm
-import math
 
 class MyDataset(Dataset):
-    def __init__(self, root: str, desti: str, market: str, comlist: List[str], start: str, end: str, window: int, dataset_type: str):
-        super().__init()
+    """
+    Dataset of graph snapshots built on sliding windows of stock‐time‐series.
 
-        self.comlist = comlist
-        self.market = market
+    Each graph contains node features (X), adjacency matrices (A), and labels (Y).
+    """
+
+    def __init__(
+        self,
+        root: str,
+        desti: str,
+        market: str,
+        comlist: list[str],
+        start: str,
+        end: str,
+        window: int,
+        dataset_type: str
+    ):
+        super().__init__()
         self.root = root
         self.desti = desti
+        self.market = market
+        self.comlist = comlist
         self.start = start
         self.end = end
         self.window = window
-        self.dates, self.next_day = self.find_dates(self.start, self.end, self.root, self.comlist, self.market)
         self.dataset_type = dataset_type
 
-        # Check if graph files already exist
-        graph_files_exist = all(os.path.exists(os.path.join(self.desti, f'{self.market}_{self.dataset_type}_{self.start}_{self.end}_{self.window}/graph_{i}.pt')) for i in range(len(self.dates) - self.window + 1))
+        # Pre-load all dataframes
+        self._dataframes = {
+            comp: self._load_csv(comp)
+            for comp in self.comlist
+        }
 
-        if not graph_files_exist:
-            # Generate the graphs and save them as PyTorch tensors
-            self._create_graphs(self.dates, self.desti, self.comlist, self.market, self.root, self.window, self.next_day)
+        # Find dates and next common day
+        self.dates, self.next_day = self._find_common_dates()
 
-    def __len__(self):
+        # Ensure output directory exists
+        self._out_dir = os.path.join(
+            self.desti,
+            f"{self.market}_{self.dataset_type}_{self.start}_{self.end}_{self.window}"
+        )
+        os.makedirs(self._out_dir, exist_ok=True)
+
+        # Generate graphs if missing
+        expected = len(self.dates) - self.window + 1
+        exists = len([name for name in os.listdir(self._out_dir) if name.startswith('graph_')])
+        if exists < expected:
+            self._create_graphs()
+
+    def __len__(self) -> int:
         return len(self.dates) - self.window + 1
 
-    def __getitem__(self, idx: int):
-        directory_path = os.path.join(self.desti, f'{self.market}_{self.dataset_type}_{self.start}_{self.end}_{self.window}')
-        data_path = os.path.join(directory_path, f'graph_{idx}.pt')
+    def __getitem__(self, idx: int) -> dict:
+        path = os.path.join(self._out_dir, f'graph_{idx}.pt')
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Missing graph file for index {idx}")
+        return torch.load(path)
 
-        if os.path.exists(data_path):
-            return torch.load(data_path)
-        else:
-            raise FileNotFoundError(f"No graph data found for index {idx}. Please ensure you've generated the required data.")
+    def _load_csv(self, comp: str) -> pd.DataFrame:
+        """Load company CSV, index by date string."""
+        path = os.path.join(self.root, f"{self.market}_{comp}_30Y.csv")
+        df = pd.read_csv(path, parse_dates=[0], index_col=0)
+        df.index = df.index.normalize()
+        return df
 
-    def check_years(self, date_str: str, start_str: str, end_str: str) -> bool:
-        date_format = "%Y-%m-%d"
-        date = datetime.strptime(date_str, date_format)
-        start = datetime.strptime(start_str, date_format)
-        end = datetime.strptime(end_str, date_format)
+    def _find_common_dates(self) -> tuple[list[str], str | None]:
+        """Find common trading dates in [start, end] and the next day after end."""
+        start_dt = datetime.fromisoformat(self.start).date()
+        end_dt = datetime.fromisoformat(self.end).date()
+        today_str = datetime.today().strftime("%Y-%m-%d")
+        after_dt = datetime.today().date()
 
-        return start <= date <= end
+        valid_sets, after_sets = [], []
+        for comp, df in self._dataframes.items():
+            dates = df.index.date
+            valid = {d.isoformat() for d in dates if start_dt <= d <= end_dt}
+            after = {d.isoformat() for d in dates if end_dt < d <= after_dt}
+            valid_sets.append(valid)
+            after_sets.append(after)
 
-    def find_dates(self, start: str, end: str, path: str, comlist: List[str], market: str) -> Tuple[List[str], str]:
-        # Get the dates for each company in the target list
-        date_sets = []
-        after_end_date_sets = []
-        for h in comlist:
-            dates = set()
-            after_end_dates = set()
-            d_path = os.path.join(path, f'{market}_{h}_30Y.csv')
-            with open(d_path, 'r') as f:
-                file = csv.reader(f)
-                next(file, None)  # Skip the header row
-                for line in file:
-                    date_str = line[0][:10]
-                    if self.check_years(date_str, start, end):
-                        dates.add(date_str)
-                    elif self.check_years(date_str, end, '2017-12-31'): # '2017-12-31' is just an example, if the latest data is used, fill in the current date
-                        after_end_dates.add(date_str)
+        common = sorted(set.intersection(*valid_sets))
+        after_common = set.intersection(*after_sets)
+        next_day = min(after_common) if after_common else None
+        return common, next_day
 
-            date_sets.append(dates)
-            after_end_date_sets.append(after_end_dates)
+    @staticmethod
+    def _signal_energy(x: np.ndarray) -> float:
+        return float(np.sum(x**2))
 
-        # Find the intersection of all date sets
-        all_dates = list(set.intersection(*date_sets))
-        all_after_end_dates = list(set.intersection(*after_end_date_sets))
-
-        # Find the next common day after the end date
-        next_common_day = min(all_after_end_dates) if all_after_end_dates else None
-
-        return sorted(all_dates), next_common_day
-
-    def signal_energy(self, x_tuple: Tuple[float]) -> float:
-        x = np.array(x_tuple)
-        return np.sum(np.square(x))
-
-    def information_entropy(self, x_tuple: Tuple[float]) -> float:
-        x = np.array(x_tuple)
+    @staticmethod
+    def _information_entropy(x: np.ndarray) -> float:
         unique, counts = np.unique(x, return_counts=True)
-        probabilities = counts / np.sum(counts)
-        entropy = -np.sum(probabilities * np.log(probabilities))
+        p = counts / counts.sum()
+        return float(-(p * np.log(p + 1e-12)).sum())
 
-        return entropy
+    def _adjacency(self, features: np.ndarray) -> torch.Tensor:
+        """
+        Build adjacency matrix A where
+          A_ij = log( max( (E_i/E_j) * exp(H_i - H_j), 1 ) )
+        using vectorized numpy operations.
+        """
+        # features: shape (num_nodes, num_features)
+        energy = np.array([self._signal_energy(row) for row in features]) + 1e-8
+        entropy = np.array([self._information_entropy(row) for row in features])
 
-    def adjacency_matrix(self, X: torch.Tensor) -> torch.Tensor:
-        A = torch.zeros((X.shape[0], X.shape[0]))
-        X = X.numpy()
-        energy = np.array([self.signal_energy(tuple(x)) for x in X])
-        entropy = np.array([self.information_entropy(tuple(x)) for x in X])
-        for i in range(X.shape[0]):
-            for j in range(X.shape[0]):
-                A[i, j] = torch.tensor((energy[i] / energy[j]) * (math.exp(entropy[i] - entropy[j])), dtype=torch.float32)
-        
-        return torch.log(A[A<1] = 1)
+        E_ratio = energy[:, None] / energy[None, :]
+        H_diff = np.exp(entropy[:, None] - entropy[None, :])
+        A_np = E_ratio * H_diff
+        A_np[A_np < 1] = 1.0
 
-    def node_feature_matrix(self, dates: List[str], comlist: List[str], market: str, path: str) -> torch.Tensor:
-        # Convert dates to datetime format for easier comparison
-        dates_dt = [pd.to_datetime(date).date() for date in dates]
+        return torch.from_numpy(np.log(A_np)).float()
 
-        # Initialize the tensor
-        X = torch.zeros((5, len(comlist), len(dates_dt)))
+    @lru_cache(maxsize=None)
+    def _get_window(self, comp: str, dates_tuple: tuple[str, ...]) -> np.ndarray:
+        """Return windowed feature matrix for one company."""
+        df = self._dataframes[comp].loc[dates_tuple]
+        # Select first 5 columns
+        arr = df.iloc[:, :5].to_numpy()
+        return np.log1p(arr)
 
-        for idx, h in enumerate(comlist):
-            d_path = os.path.join(path, f'{market}_{h}_30Y.csv')
-
-            # Read the entire CSV file into a DataFrame, but only the rows with date in 'dates_dt'
-            df = pd.read_csv(d_path, parse_dates=[0], index_col=0)
-            df.index = df.index.astype(str).str.split(" ").str[0]
-            df.index = pd.to_datetime(df.index)
-            df = df[df.index.isin(dates_dt)]
-
-            # Transpose the DataFrame so that the dates become columns and the fields become rows
-            df_T = df.transpose()
-
-            # Select only the rows for the fields we're interested in, which are the ones with indices 1 to 5
-            df_selected = df_T.iloc[0:5]
-
-            # Convert the selected part of the DataFrame to a numpy array and assign it to the tensor
-            X[:, idx, :] = torch.from_numpy(df_selected.to_numpy())
-
-        return X
-
-    def _create_graphs(self, dates: List[str], desti: str, comlist: List[str], market: str, root: str, window: int, next_day: str):
-        dates.append(next_day)
-
-        # Wrap the range function with tqdm to create a progress bar
-        for i in tqdm(range(len(dates) - window)):
-            # Construct the filename for the current graph
-            directory_path = os.path.join(desti, f'{market}_{self.dataset_type}_{self.start}_{self.end}_{window}')
-            filename = os.path.join(directory_path, f'graph_{i}.pt')
-
-            # If the file already exists, skip to the next iteration
-            if os.path.exists(filename):
-                print(f"Graph {i + 1}/{len(dates) - window} already exists, skipping...")
+    def _create_graphs(self):
+        """Generate and save graph tensors for each sliding window."""
+        # include next_day at end to shape labels
+        all_dates = self.dates + ([self.next_day] if self.next_day else [])
+        for t in tqdm(range(len(self.dates) - self.window + 1)):
+            idx = t
+            out_path = os.path.join(self._out_dir, f'graph_{idx}.pt')
+            if os.path.exists(out_path):
                 continue
 
-            print(f'Generating graph {i + 1}/{len(dates) - window}...')
+            window_dates = tuple(all_dates[t : t + self.window + 1])
+            # Build node features: shape (num_features, num_nodes, window)
+            X_list = []
+            for comp in self.comlist:
+                mat = self._get_window(comp, window_dates[:-1])  # last date reserved for labels
+                X_list.append(mat)
+            X_np = np.stack(X_list, axis=1)  # shape (window, num_nodes, features)
+            X = torch.from_numpy(X_np.transpose(2,1,0)).float()
 
-            # Generate labels
-            box = dates[i:i + window + 1]
-            X = self.node_feature_matrix(box, comlist, market, root)
-            C = torch.zeros(X.shape[1])
-            for j in range(C.shape[0]):
-                if X[3, j, -1] - X[3, j, -2] > 0:
-                    C[j] = 1
+            # Labels Y: price change from penultimate to last day
+            last0 = np.stack([self._get_window(c, window_dates[-2:]) for c in self.comlist], axis=0)
+            Y = torch.tensor((last0[:,1,3] - last0[:,0,3]) > 0, dtype=torch.float32)
 
-            # Slice the desired data and do normalization on raw data
-            X = X[:, :, :-1]
-            for i in range(X.shape[0]):
-                # Adding 1 before taking log to avoid log(0)
-                X[i] = torch.Tensor(np.log1p(X[i].numpy()))
+            # Adjacency per feature slice
+            A = torch.stack([self._adjacency(X[f].numpy()) for f in range(X.shape[0])])
 
-            # Obtain adjacency tensor
-            A = torch.zeros((X.shape[0], X.shape[1], X.shape[1]))
-            for j in range(A.shape[0]):
-                A[j] = self.adjacency_matrix(X[j])
-
-            # Save the X, A, C tensors
-            os.makedirs(directory_path, exist_ok=True)
-            torch.save({'X': X, 'A': A, 'Y': C}, filename)
+            torch.save({ 'X': X, 'A': A, 'Y': Y }, out_path)
