@@ -84,7 +84,7 @@ class MGDPR(nn.Module):
                 # first retention sees raw_feat(x)
                 h_prime = ret(h, self.D, self.raw_feat(x))
             else:
-                h_prime = ret(h, self.D, h_prime)
+                h_prime = h_prime + ret(h, self.D, h_prime)
 
 
         # Post-MLP
