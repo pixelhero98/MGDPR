@@ -1,5 +1,8 @@
 from mgd import MultiReDiffusion
 from paret import ParallelRetention
+import torch
+import torch.nn as nn
+
 
 class MGDPR(nn.Module):
     def __init__(self,
@@ -38,7 +41,8 @@ class MGDPR(nn.Module):
         idx = torch.arange(num_nodes)
         i, j = torch.meshgrid(idx, idx, indexing='ij')
         diff = i - j
-        D = (zeta ** diff) * (diff > 0)
+        D = torch.where(diff > 0, zeta ** diff, torch.zeros_like(diff, dtype=torch.float32))
+
         self.register_buffer('D', D.float())
 
         # Diffusion and Retention modules
