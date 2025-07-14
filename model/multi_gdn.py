@@ -1,3 +1,6 @@
+from mgd import MultiReDiffusion
+from paret import ParallelRetention
+
 class MGDPR(nn.Module):
     def __init__(self,
                  num_nodes:         int,
