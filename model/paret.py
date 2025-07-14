@@ -48,10 +48,11 @@ class ParallelRetention(nn.Module):
         V = self.V_layers(h)  # (N, inter_dim)
 
         # Compute pairwise interactions: (N, N)
-        inter_feat = Q @ K.transpose(0, 1)
+        inter_feat = (Q @ K.transpose(0,1)) / math.sqrt(self.inter_dim)
 
         # Retention operation: (D * inter_feat) @ V -> (N, inter_dim)
-        h_ret = (D * inter_feat) @ V
+        attn = torch.softmax(D * inter_feat, dim=-1)
+        h_ret = attn @ V
 
         # Project and activate retention features
         h_ret = self.ret_feat(h_ret)
