@@ -1,5 +1,4 @@
 import os
-import csv
 import torch
 import numpy as np
 import pandas as pd
@@ -13,6 +12,7 @@ class MyDataset(Dataset):
     Dataset of graph snapshots built on sliding windows of stock‐time‐series.
 
     Each graph contains node features (X), adjacency matrices (A), and labels (Y).
+    Normalize features by log1p then z-score per feature.
     """
 
     def __init__(
@@ -24,7 +24,8 @@ class MyDataset(Dataset):
         start: str,
         end: str,
         window: int,
-        dataset_type: str
+        dataset_type: str,
+        sparsification_threshold: float = 1.0
     ):
         super().__init__()
         self.root = root
@@ -35,27 +36,27 @@ class MyDataset(Dataset):
         self.end = end
         self.window = window
         self.dataset_type = dataset_type
+        self.sparsification_threshold = sparsification_threshold
 
         # Pre-load all dataframes
-        self._dataframes = {
-            comp: self._load_csv(comp)
-            for comp in self.comlist
-        }
+        self._dataframes = {comp: self._load_csv(comp) for comp in self.comlist}
 
         # Find dates and next common day
         self.dates, self.next_day = self._find_common_dates()
+        if not self.next_day:
+            raise ValueError(f"No common next day after {self.end} for all companies.")
 
-        # Ensure output directory exists
+        # Prepare output directory
         self._out_dir = os.path.join(
             self.desti,
             f"{self.market}_{self.dataset_type}_{self.start}_{self.end}_{self.window}"
         )
         os.makedirs(self._out_dir, exist_ok=True)
 
-        # Generate graphs if missing
-        expected = len(self.dates) - self.window + 1
-        exists = len([name for name in os.listdir(self._out_dir) if name.startswith('graph_')])
-        if exists < expected:
+        # Generate graphs if missing or incomplete
+        total_windows = len(self.dates) - self.window + 1
+        existing = sorted([f for f in os.listdir(self._out_dir) if f.startswith('graph_')])
+        if len(existing) < total_windows:
             self._create_graphs()
 
     def __len__(self) -> int:
@@ -68,24 +69,24 @@ class MyDataset(Dataset):
         return torch.load(path)
 
     def _load_csv(self, comp: str) -> pd.DataFrame:
-        """Load company CSV, index by date string."""
+        """Load company CSV, index by date."""
         path = os.path.join(self.root, f"{self.market}_{comp}_30Y.csv")
         df = pd.read_csv(path, parse_dates=[0], index_col=0)
         df.index = df.index.normalize()
         return df
 
     def _find_common_dates(self) -> tuple[list[str], str | None]:
-        """Find common trading dates in [start, end] and the next day after end."""
-        start_dt = datetime.fromisoformat(self.start).date()
-        end_dt = datetime.fromisoformat(self.end).date()
-        today_str = datetime.today().strftime("%Y-%m-%d")
-        after_dt = datetime.today().date()
+        """Find common trading dates between start/end and next common date after end."""
+        start_dt = pd.to_datetime(self.start).date()
+        end_dt = pd.to_datetime(self.end).date()
+        max_dates = [df.index.max().date() for df in self._dataframes.values()]
+        bound_dt = min(max_dates)
 
         valid_sets, after_sets = [], []
-        for comp, df in self._dataframes.items():
+        for df in self._dataframes.values():
             dates = df.index.date
             valid = {d.isoformat() for d in dates if start_dt <= d <= end_dt}
-            after = {d.isoformat() for d in dates if end_dt < d <= after_dt}
+            after = {d.isoformat() for d in dates if end_dt < d <= bound_dt}
             valid_sets.append(valid)
             after_sets.append(after)
 
@@ -94,65 +95,65 @@ class MyDataset(Dataset):
         next_day = min(after_common) if after_common else None
         return common, next_day
 
-    @staticmethod
-    def _signal_energy(x: np.ndarray) -> float:
-        return float(np.sum(x**2))
-
-    @staticmethod
-    def _information_entropy(x: np.ndarray) -> float:
-        unique, counts = np.unique(x, return_counts=True)
-        p = counts / counts.sum()
-        return float(-(p * np.log(p + 1e-12)).sum())
-
-    def _adjacency(self, features: np.ndarray) -> torch.Tensor:
+    def _compute_adjacency(self, features: np.ndarray) -> torch.Tensor:
         """
         Build adjacency matrix A where
-          A_ij = log( max( (E_i/E_j) * exp(H_i - H_j), 1 ) )
-        using vectorized numpy operations.
+        A_ij = log(max((E_i/E_j) * exp(H_i - H_j), threshold))
         """
-        # features: shape (num_nodes, num_features)
-        energy = np.array([self._signal_energy(row) for row in features]) + 1e-8
-        entropy = np.array([self._information_entropy(row) for row in features])
+        energy = np.sum(features**2, axis=1) + 1e-8
+        entropy = np.apply_along_axis(
+            lambda row: float(-np.sum(
+                (np.unique(row, return_counts=True)[1] / row.size) *
+                np.log((np.unique(row, return_counts=True)[1] / row.size) + 1e-12)
+            )),
+            1,
+            features
+        )
 
         E_ratio = energy[:, None] / energy[None, :]
         H_diff = np.exp(entropy[:, None] - entropy[None, :])
         A_np = E_ratio * H_diff
-        A_np[A_np < 1] = 1.0
 
-        return torch.from_numpy(np.log(A_np)).float()
+        A_clamped = np.maximum(A_np, self.sparsification_threshold)
+        logA = np.log(A_clamped)
+        return torch.from_numpy(logA).float()
 
     @lru_cache(maxsize=None)
     def _get_window(self, comp: str, dates_tuple: tuple[str, ...]) -> np.ndarray:
-        """Return windowed feature matrix for one company."""
+        """Return normalized windowed feature matrix: log1p + z-score of first 5 cols."""
         df = self._dataframes[comp].loc[dates_tuple]
-        # Select first 5 columns
         arr = df.iloc[:, :5].to_numpy()
-        return np.log1p(arr)
+        # Log transform
+        log_arr = np.log1p(arr)
+        # Z-score per column
+        mean = log_arr.mean(axis=0, keepdims=True)
+        std = log_arr.std(axis=0, keepdims=True) + 1e-8
+        norm_arr = (log_arr - mean) / std
+        return norm_arr
 
     def _create_graphs(self):
         """Generate and save graph tensors for each sliding window."""
-        # include next_day at end to shape labels
-        all_dates = self.dates + ([self.next_day] if self.next_day else [])
+        all_dates = self.dates + [self.next_day]
+
         for t in tqdm(range(len(self.dates) - self.window + 1)):
-            idx = t
-            out_path = os.path.join(self._out_dir, f'graph_{idx}.pt')
+            out_path = os.path.join(self._out_dir, f'graph_{t}.pt')
             if os.path.exists(out_path):
                 continue
 
-            window_dates = tuple(all_dates[t : t + self.window + 1])
-            # Build node features: shape (num_features, num_nodes, window)
-            X_list = []
-            for comp in self.comlist:
-                mat = self._get_window(comp, window_dates[:-1])  # last date reserved for labels
-                X_list.append(mat)
-            X_np = np.stack(X_list, axis=1)  # shape (window, num_nodes, features)
+            window_dates = tuple(all_dates[t:t + self.window + 1])
+            X_list = [self._get_window(c, window_dates[:-1]) for c in self.comlist]
+            X_np = np.stack(X_list, axis=1)
             X = torch.from_numpy(X_np.transpose(2,1,0)).float()
 
-            # Labels Y: price change from penultimate to last day
-            last0 = np.stack([self._get_window(c, window_dates[-2:]) for c in self.comlist], axis=0)
-            Y = torch.tensor((last0[:,1,3] - last0[:,0,3]) > 0, dtype=torch.float32)
+            last_prices = [
+                self._dataframes[c].loc[window_dates[-2:], 'Close'].to_numpy()
+                for c in self.comlist
+            ]
+            last_arr = np.stack(last_prices, axis=0)
+            Y = torch.from_numpy((last_arr[:,1] - last_arr[:,0]) > 0).float()
 
-            # Adjacency per feature slice
-            A = torch.stack([self._adjacency(X[f].numpy()) for f in range(X.shape[0])])
+            A = torch.stack([
+                self._compute_adjacency(X[f].numpy()) for f in range(X.shape[0])
+            ])
 
-            torch.save({ 'X': X, 'A': A, 'Y': Y }, out_path)
+            torch.save({'X': X, 'A': A, 'Y': Y}, out_path)
