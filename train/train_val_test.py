@@ -107,21 +107,21 @@ def main(args):
 
     # 3) instantiate datasets using company_list
     train_ds = MyDataset(args.raw_dir,
-                         args.indicators_dir,
+                         args.generated_dir,
                          args.market,
                          company_list,
                          *train_range,
                          time_steps,
                          'Train')
     val_ds   = MyDataset(args.raw_dir,
-                         args.indicators_dir,
+                         args.generated_dir,
                          args.market,
                          company_list,
                          *val_range,
                          time_steps,
                          'Validation')
     test_ds  = MyDataset(args.raw_dir,
-                         args.indicators_dir,
+                         args.generated_dir,
                          args.market,
                          company_list,
                          *test_range,
@@ -176,12 +176,12 @@ if __name__ == "__main__":
     p.add_argument('--diffusion_steps',type=int,   default=7)
     p.add_argument('--zeta',           type=float, default=1.001)
     p.add_argument('--market',         type=str,   default='NASDAQ')
-    p.add_argument('--raw_dir',       type=str,   required=True,
-                   help='base dir for raw stock CSVs')
-    p.add_argument('--indicators_dir',type=str,   required=True,
-                   help='dir for per-company indicator folders')
+    p.add_argument('--raw_dir',         type=str, required=True,
+                   help='base directory for raw stock CSV files')
+    p.add_argument('--generated_dir',   type=str, required=True,
+                   help='directory where generated feature data is stored (was “des”)')
     p.add_argument('--com_paths',     nargs=3,    required=True,
-                   help='3 CSVs listing NASDAQ, NYSE, missing symbols')
+                   help='CSVs listing NASDAQ, NYSE, SSE, missing symbols')
     p.add_argument('--train_dates',   nargs=2,    default=['2013-01-01','2014-12-31'])
     p.add_argument('--val_dates',     nargs=2,    default=['2015-01-01','2015-06-30'])
     p.add_argument('--test_dates',    nargs=2,    default=['2015-07-01','2017-12-31'])
