@@ -1,129 +1,198 @@
+import os
+import random
+import argparse
 import torch
-import csv as csv
+import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributions
+import torch.optim as optim
+from sklearn.metrics import f1_score, matthews_corrcoef
 from graph_dataset_gen import MyDataset
 from multi_gdn import MGDPR
-from sklearn.metrics import matthews_corrcoef, f1_score
 
-# Configure the device for running the model on GPU or CPU
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# ─── Reproducibility ────────────────────────────────────────────────────────────
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-# Configure the default variables // # these can be tuned // # examples
-sedate = ['2013-01-01', '2014-12-31']  # these can be tuned
-val_sedate = ['2015-01-01', '2015-06-30'] # these can be tuned
-test_sedate = ['2015-07-01', '2017-12-31'] # these can be tuned
-market = ['NASDAQ', 'NYSE', 'SSE'] # can be changed
-dataset_type = ['Train', 'Validation', 'Test']
-com_path = ['/content/drive/MyDrive/Raw_Data/Stock_Markets/NYSE_NASDAQ/NASDAQ.csv',
-            '/content/drive/MyDrive/Raw_Data/Stock_Markets/NYSE_NASDAQ/NYSE.csv',
-            '/content/drive/MyDrive/Raw_Data/Stock_Markets/NYSE_NASDAQ/NYSE_missing.csv']
-des = '/content/drive/MyDrive/Raw_Data/Stock_Markets/NYSE_NASDAQ/raw_stock_data/stocks_indicators/data'
-directory = "/content/drive/MyDrive/Raw_Data/Stock_Markets/NYSE_NASDAQ/raw_stock_data/stocks_indicators/data/google_finance"
-
-NASDAQ_com_list = []
-NYSE_com_list = []
-NYSE_missing_list = []
-com_list = [NASDAQ_com_list, NYSE_com_list, NYSE_missing_list]
-for idx, path in enumerate(com_path):
-    with open(path) as f:
-        file = csv.reader(f)
-        for line in file:
-            com_list[idx].append(line[0])  # append first element of line if each line is a list
-NYSE_com_list = [com for com in NYSE_com_list if com not in NYSE_missing_list]
-
-num_nodes, time_steps, num_relation, zeta, diffusion_steps = len(NASDAQ_com_list), 21, 5, 1.001, 7 # zeta = 1.27 sometimes results in nan in objective value, using a smaller one helps training without sacrificing performance.
-
-# Generate datasets
-train_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], time_steps, dataset_type[0])
-validation_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], time_steps, dataset_type[0])
-test_dataset = MyDataset(directory, des, market[0], NASDAQ_com_list, sedate[0], sedate[1], time_steps, dataset_type[0])
-
-# Define model
-diffusion_dims = [num_relation * time_steps, 128, 256, 512, 512, 512, 256, 128, 64]
-ret_in_dim = [128, 256, 512, 512, 512, 256, 128, 64]
-ret_inter_dim = [512, 512, 512, 512, 512, 512, 512, 512]
-ret_hidden_dim = [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024]
-ret_out_dim = [256, 256, 256, 256, 256, 256, 256, 256]
-post_pro = [256, 64, 2]
-
-# Define model
-model = MGDPR(num_nodes, diffusion_dims, ret_in_dim, ret_inter_dim, ret_hidden_dim, ret_out_dim,
-              post_pro, num_relation, diffusion_steps, zeta)
-
-# Pass model and datasets to GPU
-model = model.to(device)
-optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4)
-
-# Define training process & validation process & testing process
-epochs = 10000
-
-# Training and validating
-for epoch in range(epochs):
+# ─── Training / Validation / Test Loops ────────────────────────────────────────
+def train_one_epoch(model, dataset, optimizer, device):
     model.train()
-    objective_total = 0
-    correct = 0
-    total = 0
+    total_loss, total_correct, total_samples = 0.0, 0, 0
 
-    for sample in train_dataset: # Recommend to update every sample, full batch training can be time-consuming
-        X = sample['X'].to(device)  # node feature tensor
-        A = sample['A'].to(device)  # adjacency tensor
-        C = sample['Y'].long()
-        C = C.to(device)  # label vector
+    for sample in dataset:
+        X = sample['X'].to(device)           # (N, F)
+        A = sample['A'].to(device)           # (N, N)
+        C = sample['Y'].long().to(device)    # (N,) labels
 
         optimizer.zero_grad()
-        out = model(X, A)
-        objective = F.cross_entropy(out, C) #+ theta_regularizer(model.theta) regularization may resultvery slow learning process, optional usage.
-        objective.backward()
+        logits = model(X, A)                 # → (N, num_classes)
+        loss = F.cross_entropy(logits, C)
+        loss.backward()
         optimizer.step()
-        objective_total += objective.item()
 
-    # If performance progress of the model is required
-        out = out.argmax(dim=1)
-        correct += int((out == C).sum())
-        total += C.shape[0]
-    if epoch % 1 == 0:
-        print(f"Epoch {epoch}: loss={objective_total:.4f}, acc={correct / total:.4f}")
+        total_loss += loss.item() * C.size(0)
+        preds = logits.argmax(dim=1)
+        total_correct += (preds == C).sum().item()
+        total_samples += C.size(0)
 
-# Validation
-model.eval()
-acc = 0
-f1 = 0
-mcc = 0
+    avg_loss = total_loss / total_samples
+    acc = total_correct / total_samples
+    return avg_loss, acc
 
-for idx, sample in enumerate(validation_dataset):
-    X = sample['X']  # node feature tensor
-    A = sample['A']  # adjacency tensor
-    C = sample['Y']  # label vector
-    out = model(X, A).argmax(dim=1)
+@torch.no_grad()
+def evaluate(model, dataset, device):
+    model.eval()
+    all_preds = []
+    all_labels = []
 
-    acc += int((out == C).sum())
-    f1 += f1_score(C, out.cpu().numpy())
-    mcc += matthews_corrcoef(C, out.cpu().numpy())
+    for sample in dataset:
+        X = sample['X'].to(device)
+        A = sample['A'].to(device)
+        C = sample['Y'].long().to(device)
 
-print(acc / (len(validation_dataset) * C.shape[0]))
-print(f1 / len(validation_dataset))
-print(mcc / len(validation_dataset))
+        logits = model(X, A)
+        preds = logits.argmax(dim=1)
 
-# Test
-acc = 0
-f1 = 0
-mcc = 0
+        all_preds.append(preds.cpu())
+        all_labels.append(C.cpu())
 
-for idx, sample in enumerate(test_dataset):
-    X = sample['X']  # node feature tensor
-    A = sample['A']  # adjacency tensor
-    C = sample['Y']  # label vector
-    out = model(X, A).argmax(dim=1)
+    y_pred = torch.cat(all_preds).numpy()
+    y_true = torch.cat(all_labels).numpy()
 
-    acc += int((out == C).sum())
-    f1 += f1_score(C, out.cpu().numpy())
-    mcc += matthews_corrcoef(C, out.cpu().numpy())
+    acc = (y_pred == y_true).mean()
+    f1  = f1_score(y_true, y_pred, average='macro')
+    mcc = matthews_corrcoef(y_true, y_pred)
+    return acc, f1, mcc
 
-print(acc / (len(test_dataset) * C.shape[0]))
-print(f1 / len(test_dataset))
-print(mcc / len(test_dataset))
+# ─── Main ──────────────────────────────────────────────────────────────────────
+def main(args):
+    set_seed(args.seed)
 
-# save model to the directory
-if int(input('save model? (1/0)?')) == 1:
-    torch.save(model, dir_path() + 'your_dataset_name/model')
+    # Device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Date ranges
+    train_range = args.train_dates
+    val_range   = args.val_dates
+    test_range  = args.test_dates
+
+    # Company lists
+    # (you already populate these as before)
+    NASDAQ_list, NYSE_list, NYSE_missing, SSE_list = [], [], [], []
+    for path, target in zip(args.com_paths, [NASDAQ_list, NYSE_list, NYSE_missing, SSE_list]):
+        with open(path, 'r') as f:
+            for line in f:
+                target.append(line.strip().split(',')[0])
+    NYSE_list = [c for c in NYSE_list if c not in NYSE_missing]
+
+    # 1) select the tickers for the chosen market
+    if args.market == 'NASDAQ':
+        company_list = NASDAQ_list
+    elif args.market == 'NYSE':
+        company_list = NYSE_list
+    elif args.market == 'SSE':
+        company_list = SSE_list
+    else:
+        raise ValueError(f"Unsupported market {args.market!r}")
+
+    # 2) derive number of nodes
+    num_nodes = len(company_list)
+    time_steps      = args.time_steps
+    num_relation    = args.num_relation
+    zeta            = args.zeta
+    diffusion_steps = args.diffusion_steps
+
+    # 3) instantiate datasets using company_list
+    train_ds = MyDataset(args.raw_dir,
+                         args.indicators_dir,
+                         args.market,
+                         company_list,
+                         *train_range,
+                         time_steps,
+                         'Train')
+    val_ds   = MyDataset(args.raw_dir,
+                         args.indicators_dir,
+                         args.market,
+                         company_list,
+                         *val_range,
+                         time_steps,
+                         'Validation')
+    test_ds  = MyDataset(args.raw_dir,
+                         args.indicators_dir,
+                         args.market,
+                         company_list,
+                         *test_range,
+                         time_steps,
+                         'Test')
+
+    # 4) build model using the dynamic num_nodes
+    model = MGDPR(
+        num_nodes,
+        args.diffusion_dims,
+        args.ret_in_dim,
+        args.ret_inter_dim,
+        args.ret_hidden_dim,
+        args.ret_out_dim,
+        args.post_pro,
+        args.num_relation,
+        args.diffusion_steps,
+        args.zeta
+    ).to(device)
+
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+
+    best_val_acc = 0.0
+    for epoch in range(1, args.epochs + 1):
+        train_loss, train_acc = train_one_epoch(model, train_ds, optimizer, device)
+        val_acc, val_f1, val_mcc = evaluate(model, val_ds, device)
+
+        print(f"[Epoch {epoch}/{args.epochs}] "
+              f"Train: loss={train_loss:.4f}, acc={train_acc:.4f} | "
+              f"Val: acc={val_acc:.4f}, f1={val_f1:.4f}, mcc={val_mcc:.4f}")
+
+        # Checkpoint on validation accuracy
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            ckpt_path = os.path.join(args.save_dir, 'best_model.pt')
+            os.makedirs(args.save_dir, exist_ok=True)
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"→ Saved new best model (acc={val_acc:.4f}) to {ckpt_path}")
+
+    # Final test
+    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    test_acc, test_f1, test_mcc = evaluate(model, test_ds, device)
+    print(f"\nTest Results — acc={test_acc:.4f}, f1={test_f1:.4f}, mcc={test_mcc:.4f}")
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument('--seed',           type=int,   default=42)
+    p.add_argument('--epochs',         type=int,   default=3000)
+    p.add_argument('--lr',             type=float, default=2e-4)
+    p.add_argument('--time_steps',     type=int,   default=21)
+    p.add_argument('--num_relation',   type=int,   default=5)
+    p.add_argument('--diffusion_steps',type=int,   default=7)
+    p.add_argument('--zeta',           type=float, default=1.001)
+    p.add_argument('--market',         type=str,   default='NASDAQ')
+    p.add_argument('--raw_dir',       type=str,   required=True,
+                   help='base dir for raw stock CSVs')
+    p.add_argument('--indicators_dir',type=str,   required=True,
+                   help='dir for per-company indicator folders')
+    p.add_argument('--com_paths',     nargs=3,    required=True,
+                   help='3 CSVs listing NASDAQ, NYSE, missing symbols')
+    p.add_argument('--train_dates',   nargs=2,    default=['2013-01-01','2014-12-31'])
+    p.add_argument('--val_dates',     nargs=2,    default=['2015-01-01','2015-06-30'])
+    p.add_argument('--test_dates',    nargs=2,    default=['2015-07-01','2017-12-31'])
+    p.add_argument('--save_dir',      type=str,   default='./checkpoints')
+    # model dims
+    p.add_argument('--diffusion_dims', nargs='+', type=int, default=[105,128,256,512,512,512,256,128,64])
+    p.add_argument('--ret_in_dim',    nargs='+', type=int, default=[128,256,512,512,512,256,128,64])
+    p.add_argument('--ret_inter_dim', nargs='+', type=int, default=[512]*8)
+    p.add_argument('--ret_hidden_dim',nargs='+', type=int, default=[1024]*8)
+    p.add_argument('--ret_out_dim',   nargs='+', type=int, default=[256]*8)
+    p.add_argument('--post_pro',      nargs='+', type=int, default=[256,64,2])
+
+    args = p.parse_args()
+    main(args)
