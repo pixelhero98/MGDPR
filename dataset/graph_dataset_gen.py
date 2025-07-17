@@ -12,7 +12,7 @@ class MyDataset(Dataset):
     Dataset of graph snapshots built on sliding windows of stock‐time‐series.
 
     Each graph contains node features (X), adjacency matrices (A), and labels (Y).
-    Normalize features by log1p then z-score per feature.
+    Normalize features by log1p per feature.
     """
 
     def __init__(
@@ -124,11 +124,7 @@ class MyDataset(Dataset):
         df = self._dataframes[comp].loc[dates_tuple]
         arr = df.iloc[:, :5].to_numpy()
         # Log transform
-        log_arr = np.log1p(arr)
-        # Z-score per column
-        mean = log_arr.mean(axis=0, keepdims=True)
-        std = log_arr.std(axis=0, keepdims=True) + 1e-8
-        norm_arr = (log_arr - mean) / std
+        norm_arr = np.log1p(arr)
         return norm_arr
 
     def _create_graphs(self):
