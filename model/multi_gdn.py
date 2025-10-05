@@ -57,12 +57,35 @@ class MGDPR(nn.Module):
             == len(ret_out_dim)
         ):
             raise ValueError("Retention dimension lists must all be the same length.")
+        if len(post_pro) < 2:
+            raise ValueError("post_pro must describe at least an input and output dimension.")
 
         self.layers = len(ret_in_dim)
         if self.layers == 0:
             raise ValueError("At least one diffusion/retention layer is required.")
 
         self.num_nodes = num_nodes
+
+        for layer_idx, (expected_in, actual_in) in enumerate(
+            zip(diffusion_dims[1:], ret_in_dim)
+        ):
+            if expected_in != actual_in:
+                raise ValueError(
+                    "Each retention block must receive the output dimension of the preceding "
+                    f"diffusion block. Expected {expected_in} for layer {layer_idx}, "
+                    f"received {actual_in}."
+                )
+
+        if any(out_dim != ret_out_dim[0] for out_dim in ret_out_dim):
+            raise ValueError(
+                "All retention blocks must share the same output dimension so that the "
+                "residual connection remains well-defined."
+            )
+
+        if post_pro[0] != ret_out_dim[-1]:
+            raise ValueError(
+                "The post-processing MLP must consume the output of the final retention block."
+            )
 
         # Transition tensor T: (layers, R, S, N, N)
         self.T = nn.Parameter(
