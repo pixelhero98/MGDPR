@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+
 class MultiReDiffusion(nn.Module):
     """Perform diffusion over multiple relations and aggregate the results.
 
@@ -19,69 +20,37 @@ class MultiReDiffusion(nn.Module):
     3. Project the diffused features with a relation specific linear layer.
     4. Mix the relation specific representations with a ``1×1`` convolution and
        sum them to obtain the final features.
-
-    Parameters
-    ----------
-    input_dim:
-        Number of input features per node.
-    output_dim:
-        Number of output features per node.
-    num_relations:
-        Number of distinct relations present in the graph.
     """
-    def __init__(
-        self,
-        input_dim: int,
-        output_dim: int,
-        num_relations: int
-    ):
+
+    def __init__(self, input_dim: int, output_dim: int, num_relations: int) -> None:
         super().__init__()
+        if num_relations <= 0:
+            raise ValueError("`num_relations` must be positive.")
+
         self.num_relations = num_relations
         self.input_dim = input_dim
         self.output_dim = output_dim
 
         # Per-relation linear transformations.
         self.fc_layers = nn.ModuleList(
-            nn.Linear(input_dim, output_dim)
-            for _ in range(num_relations)
+            [nn.Linear(input_dim, output_dim) for _ in range(num_relations)]
         )
 
         # 1×1 convolution to mix across relations (acting on channel dimension).
         self.relation_mixer = nn.Conv2d(
             in_channels=num_relations,
             out_channels=num_relations,
-            kernel_size=1
+            kernel_size=1,
         )
 
         # Activation after mixing across relations.
         self.mixer_act = nn.PReLU(num_parameters=num_relations)
 
-    def forward(
-        self,
-        gamma: Tensor,
-        T: Tensor,
-        a: Tensor,
-        x: Tensor,
-    ) -> Tensor:
-        """Run the diffusion pipeline.
+    def forward(self, gamma: Tensor, T: Tensor, a: Tensor, x: Tensor) -> Tensor:
+        """Run the diffusion pipeline."""
 
-        Parameters
-        ----------
-        gamma:
-            Unnormalised weights for each diffusion step ``[R, S]``.
-        T:
-            Diffusion matrices for each relation and expansion step
-            ``[R, S, N, N]``.
-        a:
-            Binary adjacency masks per relation ``[R, N, N]``.
-        x:
-            Node feature matrix ``[N, input_dim]`` shared across relations.
-
-        Returns
-        -------
-        Tensor
-            Aggregated node features of shape ``[N, output_dim]``.
-        """
+        if x.dim() != 2:
+            raise ValueError("`x` must be a 2D tensor of shape [N, input_dim].")
 
         R, S = gamma.shape
         N, feature_dim = x.shape

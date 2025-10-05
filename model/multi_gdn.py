@@ -8,8 +8,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from mgd import MultiReDiffusion
-from paret import ParallelRetention
+from model.mgd import MultiReDiffusion
+from model.paret import ParallelRetention
 
 
 class MGDPR(nn.Module):
@@ -57,6 +57,12 @@ class MGDPR(nn.Module):
             == len(ret_out_dim)
         ):
             raise ValueError("Retention dimension lists must all be the same length.")
+        if len(post_pro) < 2:
+            raise ValueError("post_pro must contain at least input and output dimensions.")
+        if post_pro[0] != ret_out_dim[-1]:
+            raise ValueError(
+                "The first post-processing dimension must match the last retention output dimension."
+            )
 
         self.layers = len(ret_in_dim)
         if self.layers == 0:
@@ -84,14 +90,18 @@ class MGDPR(nn.Module):
 
         # Diffusion and Retention modules
         self.diffusion_layers = nn.ModuleList(
-            MultiReDiffusion(in_dim, out_dim, num_relation)
-            for in_dim, out_dim in zip(diffusion_dims[:-1], diffusion_dims[1:])
+            [
+                MultiReDiffusion(in_dim, out_dim, num_relation)
+                for in_dim, out_dim in zip(diffusion_dims[:-1], diffusion_dims[1:])
+            ]
         )
         self.retention_layers = nn.ModuleList(
-            ParallelRetention(in_dim, i_dim, h_dim, o_dim)
-            for in_dim, i_dim, h_dim, o_dim in zip(
-                ret_in_dim, ret_inter_dim, ret_hidden_dim, ret_out_dim
-            )
+            [
+                ParallelRetention(in_dim, i_dim, h_dim, o_dim)
+                for in_dim, i_dim, h_dim, o_dim in zip(
+                    ret_in_dim, ret_inter_dim, ret_hidden_dim, ret_out_dim
+                )
+            ]
         )
 
         # Raw feature projection (project x → first retention input)
@@ -99,7 +109,7 @@ class MGDPR(nn.Module):
 
         # Post-processing MLP
         self.mlp = nn.ModuleList(
-            nn.Linear(in_dim, out_dim) for in_dim, out_dim in zip(post_pro[:-1], post_pro[1:])
+            [nn.Linear(in_dim, out_dim) for in_dim, out_dim in zip(post_pro[:-1], post_pro[1:])]
         )
 
     def _init_transition_params(self) -> None:
@@ -158,6 +168,10 @@ class MGDPR(nn.Module):
             else:
                 if residual is None:
                     raise RuntimeError("Residual state was not initialised correctly.")
+                if residual.shape[1] != retention_module.out_dim:
+                    raise ValueError(
+                        "Retention block output dimensions must be consistent across layers."
+                    )
                 residual = residual + retention_module(h, self.D, residual)
 
         if residual is None:

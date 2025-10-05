@@ -1,13 +1,10 @@
-"""Graph dataset generation utilities.
-
-This module builds temporal graph snapshots from raw stock time-series data.
-"""
+"""Utilities to generate temporal graph datasets from raw OHLCV data."""
 
 from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -20,6 +17,13 @@ GraphSample = Dict[str, Tensor]
 
 _EPS = 1e-8
 _NUM_FEATURES = 5  # Open, High, Low, Close, Volume
+
+
+def _ensure_sequence(name: str, values: Iterable[str]) -> List[str]:
+    values = list(values)
+    if not values:
+        raise ValueError(f"{name} must contain at least one element.")
+    return values
 
 
 class GraphDataset(Dataset[GraphSample]):
@@ -39,8 +43,6 @@ class GraphDataset(Dataset[GraphSample]):
     ) -> None:
         super().__init__()
 
-        if not companies:
-            raise ValueError("`companies` must contain at least one ticker symbol.")
         if window <= 1:
             raise ValueError("`window` must be greater than 1 to compute labels.")
         if sparsification_threshold <= 0:
@@ -49,7 +51,7 @@ class GraphDataset(Dataset[GraphSample]):
         self.root = Path(root)
         self.destination = Path(destination)
         self.market = market
-        self.companies = list(companies)
+        self.companies = _ensure_sequence("companies", companies)
         self.start = start
         self.end = end
         self.window = window
@@ -69,25 +71,27 @@ class GraphDataset(Dataset[GraphSample]):
                 "Reduce `window` or adjust the date range."
             )
 
+        actual_start = self.dates[0].strftime("%Y-%m-%d")
+        actual_end = self.dates[-1].strftime("%Y-%m-%d")
         self._output_dir = self.destination / (
-            f"{self.market}_{self.dataset_type}_{self.start}_{self.end}_{self.window}"
+            f"{self.market}_{self.dataset_type}_{actual_start}_{actual_end}_{self.window}"
         )
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
-        existing = sorted(self._output_dir.glob("graph_*.pt"))
-        if len(existing) < self._num_windows:
+        if len(list(self._output_dir.glob("graph_*.pt"))) < self._num_windows:
             self._create_graphs()
 
-    # ---------------------------------------------------------------------
-    # Dataset API
-    def __len__(self) -> int:
+    # ------------------------------------------------------------------
+    # Dataset protocol
+    def __len__(self) -> int:  # pragma: no cover - simple delegation
         return self._num_windows
 
     def __getitem__(self, index: int) -> GraphSample:
         path = self._graph_path(index)
         if not path.exists():
             raise FileNotFoundError(f"Missing graph sample at index {index} ({path})")
-        return torch.load(path, map_location="cpu")
+        sample: GraphSample = torch.load(path, map_location="cpu")
+        return sample
 
     # ------------------------------------------------------------------
     # Data loading helpers
@@ -113,29 +117,52 @@ class GraphDataset(Dataset[GraphSample]):
 
     def _find_common_dates(self) -> Tuple[List[pd.Timestamp], pd.Timestamp]:
         start_ts = pd.Timestamp(self.start)
-        end_ts = pd.Timestamp(self.end)
+        requested_end = pd.Timestamp(self.end)
 
         max_dates = [frame.index.max() for frame in self._dataframes.values()]
-        bound_ts = min(max_dates)
+        min_dates = [frame.index.min() for frame in self._dataframes.values()]
+        latest_common_end = min(max_dates)
+        earliest_common_start = max(min_dates)
+
+        if earliest_common_start > requested_end:
+            raise ValueError(
+                "The requested end date precedes the earliest shared trading day "
+                f"({earliest_common_start.date()})."
+            )
+
+        effective_end = min(requested_end, latest_common_end)
+        if effective_end < start_ts:
+            raise ValueError(
+                "The requested window does not overlap with the available data. "
+                f"Earliest shared date is {earliest_common_start.date()}"
+                f" while start date is {start_ts.date()}."
+            )
 
         valid_sets: List[set[pd.Timestamp]] = []
-        after_sets: List[set[pd.Timestamp]] = []
+        future_sets: List[set[pd.Timestamp]] = []
         for frame in self._dataframes.values():
             index = frame.index
-            valid_mask = (index >= start_ts) & (index <= end_ts)
-            after_mask = (index > end_ts) & (index <= bound_ts)
+            valid_mask = (index >= start_ts) & (index <= effective_end)
+            future_mask = index > effective_end
             valid_sets.append(set(index[valid_mask]))
-            after_sets.append(set(index[after_mask]))
+            future_sets.append(set(index[future_mask]))
+
+        if not valid_sets:
+            raise RuntimeError("No dataframes were loaded for the requested companies.")
 
         common = sorted(set.intersection(*valid_sets))
         if not common:
             raise ValueError("No common trading days found in the requested range.")
 
-        after_common = set.intersection(*after_sets)
-        if not after_common:
-            raise ValueError("No common trading day available immediately after the end date.")
+        next_candidates = set.intersection(*future_sets)
+        if not next_candidates:
+            raise ValueError(
+                "No common trading day is available after "
+                f"{effective_end.date()}. Ensure the requested end date leaves "
+                "at least one shared trading session for label computation."
+            )
 
-        next_day = min(after_common)
+        next_day = min(next_candidates)
         return [pd.Timestamp(ts) for ts in common], pd.Timestamp(next_day)
 
     # ------------------------------------------------------------------
@@ -156,9 +183,11 @@ class GraphDataset(Dataset[GraphSample]):
 
         energy_ratio = energy[:, None] / energy[None, :]
         entropy_ratio = np.exp(entropy[:, None] - entropy[None, :])
-        adjacency = np.maximum(energy_ratio * entropy_ratio, self.sparsification_threshold)
+        combined = energy_ratio * entropy_ratio
+        combined = 0.5 * (combined + combined.T)
+        combined = np.clip(combined, self.sparsification_threshold, None)
 
-        return torch.from_numpy(np.log(adjacency)).float()
+        return torch.from_numpy(np.log(combined)).float()
 
     @lru_cache(maxsize=None)
     def _get_window(self, company: str, dates: Tuple[pd.Timestamp, ...]) -> np.ndarray:
@@ -172,7 +201,11 @@ class GraphDataset(Dataset[GraphSample]):
     def _create_graphs(self) -> None:
         all_dates = self.dates + [self.next_day]
 
-        for index in tqdm(range(self._num_windows), desc="Building graph dataset", unit="win"):
+        for index in tqdm(
+            range(self._num_windows),
+            desc="Building graph dataset",
+            unit="win",
+        ):
             path = self._graph_path(index)
             if path.exists():
                 continue
@@ -183,11 +216,16 @@ class GraphDataset(Dataset[GraphSample]):
                 axis=0,
             )  # (num_companies, window, num_features)
 
-            features = torch.from_numpy(feature_windows.reshape(len(self.companies), -1)).float()
+            features = torch.from_numpy(
+                feature_windows.reshape(len(self.companies), -1)
+            ).float()
 
             feature_matrices = np.transpose(feature_windows, (2, 0, 1))
             adjacency = torch.stack(
-                [self._compute_adjacency(feature_matrices[feat_idx]) for feat_idx in range(feature_matrices.shape[0])]
+                [
+                    self._compute_adjacency(feature_matrices[feat_idx])
+                    for feat_idx in range(feature_matrices.shape[0])
+                ]
             )
 
             price_changes = np.stack(
@@ -199,7 +237,9 @@ class GraphDataset(Dataset[GraphSample]):
                 ],
                 axis=0,
             )
-            labels = torch.from_numpy((price_changes[:, 1] > price_changes[:, 0]).astype(np.int64))
+            labels = torch.from_numpy(
+                (price_changes[:, 1] > price_changes[:, 0]).astype(np.int64)
+            )
 
             torch.save({"X": features, "A": adjacency, "Y": labels}, path)
 
