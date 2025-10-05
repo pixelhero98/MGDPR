@@ -165,9 +165,16 @@ class GraphDataset(Dataset[GraphSample]):
         entropy_ratio = np.exp(entropy[:, None] - entropy[None, :])
         combined = energy_ratio * entropy_ratio
         combined = 0.5 * (combined + combined.T)
-        combined = np.clip(combined, self.sparsification_threshold, None)
 
-        return torch.from_numpy(np.log(combined)).float()
+        # Sparsify the adjacency matrix by removing weak connections while ensuring
+        # numerical stability when the values are later transformed.
+        mask = combined >= self.sparsification_threshold
+        combined = np.where(mask, combined, 0.0)
+
+        # ``log1p`` keeps zeroed entries at exactly zero instead of ``-inf``
+        # (which would happen with ``log``) and still compresses the dynamic
+        # range of the surviving connections.
+        return torch.from_numpy(np.log1p(combined)).float()
 
     @lru_cache(maxsize=None)
     def _get_window(self, company: str, dates: Tuple[pd.Timestamp, ...]) -> np.ndarray:
