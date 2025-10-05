@@ -1,18 +1,33 @@
+"""Multi-relation diffusion module used throughout the project."""
+
+from __future__ import annotations
+
+from typing import Tuple
+
 import torch
 import torch.nn as nn
 from torch import Tensor
 
 class MultiReDiffusion(nn.Module):
-    """
-    A multi-relation diffusion module that:
-      1. Computes per-relation diffused node features via weighted diffusion matrices.
-      2. Applies a relation-specific linear transform.
-      3. Mixes information across relations with a 1×1 convolution and aggregates across relations.
+    """Perform diffusion over multiple relations and aggregate the results.
 
-    Args:
-        input_dim: Dimensionality of input node features D_in.
-        output_dim: Dimensionality of output features D_out.
-        num_relations: Number of distinct relations R.
+    The module supports a small pipeline that is repeated for every relation:
+
+    1. Aggregate diffusion matrices across expansion steps using a learned
+       weighting ``gamma``.
+    2. Apply the resulting diffusion matrix to the node features.
+    3. Project the diffused features with a relation specific linear layer.
+    4. Mix the relation specific representations with a ``1×1`` convolution and
+       sum them to obtain the final features.
+
+    Parameters
+    ----------
+    input_dim:
+        Number of input features per node.
+    output_dim:
+        Number of output features per node.
+    num_relations:
+        Number of distinct relations present in the graph.
     """
     def __init__(
         self,
@@ -25,71 +40,94 @@ class MultiReDiffusion(nn.Module):
         self.input_dim = input_dim
         self.output_dim = output_dim
 
-        # Per-relation linear transformations
-        self.fc_layers = nn.ModuleList([
+        # Per-relation linear transformations.
+        self.fc_layers = nn.ModuleList(
             nn.Linear(input_dim, output_dim)
             for _ in range(num_relations)
-        ])
+        )
 
-        # 1×1 conv to mix across relations (acting on channel dimension)
+        # 1×1 convolution to mix across relations (acting on channel dimension).
         self.relation_mixer = nn.Conv2d(
             in_channels=num_relations,
             out_channels=num_relations,
             kernel_size=1
         )
 
-        # Activation after mixing
+        # Activation after mixing across relations.
         self.mixer_act = nn.PReLU(num_parameters=num_relations)
 
     def forward(
         self,
-        gamma: Tensor,    # [R, S] unnormalized per-relation weights over diffusion steps
-        T:     Tensor,    # [R, S, N, N] diffusion matrices per step and relation
-        a:     Tensor,    # [R, N, N] adjacency matrices per relation
-        x:     Tensor     # [N, D_in] node feature matrix
+        gamma: Tensor,
+        T: Tensor,
+        a: Tensor,
+        x: Tensor,
     ) -> Tensor:
-        """
-        Args:
-            gamma: Unnormalized weights over S diffusion steps for each relation ([R, S]).
-                   Will be normalized per relation via softmax over steps (dim=1).
-            T:     Diffusion step matrices ([R, S, N, N]).
-            a:     Adjacency matrices per relation ([R, N, N]).
-            x:     Node feature matrix ([N, D_in]), shared across relations.
+        """Run the diffusion pipeline.
 
-        Returns:
-            aggregated_features: [N, D_out] matrix after mixing and summing over relations.
+        Parameters
+        ----------
+        gamma:
+            Unnormalised weights for each diffusion step ``[R, S]``.
+        T:
+            Diffusion matrices for each relation and expansion step
+            ``[R, S, N, N]``.
+        a:
+            Binary adjacency masks per relation ``[R, N, N]``.
+        x:
+            Node feature matrix ``[N, input_dim]`` shared across relations.
+
+        Returns
+        -------
+        Tensor
+            Aggregated node features of shape ``[N, output_dim]``.
         """
+
         R, S = gamma.shape
-        N, _ = x.shape
-        assert T.shape == (R, S, N, N), f"Expected T.shape==(R,S,N,N)=({R},{S},{N},{N}), got {tuple(T.shape)}"
-        assert a.shape == (R, N, N), f"Expected a.shape==(R,N,N)=({R},{N},{N}), got {tuple(a.shape)}"
+        N, feature_dim = x.shape
+        if feature_dim != self.input_dim:
+            raise ValueError(
+                f"Expected node features with dimension {self.input_dim}, "
+                f"received {feature_dim}."
+            )
 
-        x = x.reshape(N, -1)
-        # Normalize gamma per relation so that for each r, sum_s gamma[r,s] == 1
-        gamma_norm = torch.softmax(gamma, dim=1)  # [R, S]
+        expected_T_shape: Tuple[int, int, int, int] = (R, S, N, N)
+        expected_a_shape: Tuple[int, int, int] = (R, N, N)
+        if T.shape != expected_T_shape:
+            raise ValueError(
+                "Expected T to have shape (R, S, N, N) but received "
+                f"{tuple(T.shape)}."
+            )
+        if a.shape != expected_a_shape:
+            raise ValueError(
+                "Expected adjacency tensor to have shape (R, N, N) but "
+                f"received {tuple(a.shape)}."
+            )
 
-        # 1) Combine step matrices into per-relation diffusion: [R, N, N]
-        weighted_steps = gamma_norm.view(R, S, 1, 1) * T  # [R, S, N, N]
-        combined_diff = weighted_steps.sum(dim=1)         # [R, N, N]
+        # Normalize gamma per relation so that for each relation the weights sum to 1.
+        gamma_norm = torch.softmax(gamma, dim=1)
 
-        # 2) Apply adjacency mask: [R, N, N]
+        # 1) Combine step matrices into per-relation diffusion matrices.
+        weighted_steps = gamma_norm.view(R, S, 1, 1) * T
+        combined_diff = weighted_steps.sum(dim=1)
+
+        # 2) Apply adjacency masks to respect graph structure.
         diffusion_mats = combined_diff * a
 
-        # 3) Diffuse features: [R, N, D_in]
-        diff_feats = torch.einsum("rnm,md->rnd", diffusion_mats, x)
+        # 3) Diffuse features for each relation.
+        diff_feats = torch.matmul(diffusion_mats, x)
 
-        # 4) Per-relation transform: [R, N, D_out]
-        diffused = torch.stack([
-            self.fc_layers[r](diff_feats[r])
-            for r in range(R)
-        ], dim=0)
+        # 4) Per-relation transformation.
+        diffused = torch.stack(
+            [layer(diff_feats[r]) for r, layer in enumerate(self.fc_layers)],
+            dim=0,
+        )
 
-        # 5) Cross-relation mixing: [1, R, N, D_out]
+        # 5) Cross-relation mixing and activation.
         mixed = self.relation_mixer(diffused.unsqueeze(0))
         mixed = self.mixer_act(mixed)
-        mixed = mixed.reshape(R, N, self.output_dim)  # [R, N, D_out]
+        mixed = mixed.view(R, N, self.output_dim)
 
-        # 6) Aggregate across relations: [N, D_out]
+        # 6) Aggregate across relations.
         aggregated_features = mixed.sum(dim=0)
-
         return aggregated_features
