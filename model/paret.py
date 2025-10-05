@@ -1,5 +1,12 @@
+"""Parallel retention layer used within the MGDPR model."""
+
+from __future__ import annotations
+
+import math
+
 import torch
 import torch.nn as nn
+
 
 class ParallelRetention(nn.Module):
     def __init__(
@@ -33,22 +40,39 @@ class ParallelRetention(nn.Module):
         self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=self.out_dim)
 
     def forward(self, h: torch.Tensor, D: torch.Tensor, h_prime: torch.Tensor) -> torch.Tensor:
+        """Combine diffused features ``h`` with retained state ``h_prime``.
+
+        Parameters
+        ----------
+        h:
+            Diffused node representations of shape ``[N, in_dim]``.
+        D:
+            Decay matrix used to scale interactions, shape ``[N, N]``.
+        h_prime:
+            Previously retained features of shape ``[N, out_dim]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Updated retained features with the same shape as ``h_prime``.
         """
-        h: Tensor of shape (N, in_dim)
-        D: Tensor of shape (N, N) for scaling feature interactions
-        h_prime: Tensor of shape (N, out_dim) to concatenate
-        returns: Tensor of shape (N, out_dim)
-        """
-        # Ensure D is on the same device as h
-        D = D.to(h.device)
+
+        if h.shape[0] != D.shape[0] or D.shape[0] != D.shape[1]:
+            raise ValueError("Decay matrix must be square with side length equal to the number of nodes.")
+
+        if h_prime.shape[0] != h.shape[0]:
+            raise ValueError("Retention input must share the same node dimension as h.")
+
+        device = h.device
+        D = D.to(device)
 
         # Compute Q, K, V projections
-        Q = self.Q_layers(h)  # (N, inter_dim)
-        K = self.K_layers(h)  # (N, inter_dim)
-        V = self.V_layers(h)  # (N, inter_dim)
+        Q = self.Q_layers(h)
+        K = self.K_layers(h)
+        V = self.V_layers(h)
 
         # Compute pairwise interactions: (N, N)
-        inter_feat = (Q @ K.transpose(0,1)) / math.sqrt(self.inter_dim)
+        inter_feat = (Q @ K.transpose(0, 1)) / math.sqrt(self.inter_dim)
 
         # Retention operation: (D * inter_feat) @ V -> (N, inter_dim)
         attn = torch.softmax(D * inter_feat, dim=-1)
@@ -62,11 +86,13 @@ class ParallelRetention(nn.Module):
         h_cat = self.cat_feat(h_prime)
 
         # Concatenate retention and prime, project and activate
-        combined = torch.cat((h_ret, h_cat), dim=-1)  # (N, 2*hidden_dim)
+        combined = torch.cat((h_ret, h_cat), dim=-1)
         x_out = self.ret_proj(combined)
         x_out = self.cat_activation(x_out)
 
-        # Apply GroupNorm
+        # Apply GroupNorm (expects shape [B, C, *])
+        x_out = x_out.transpose(0, 1).unsqueeze(0)
         x_out = self.group_norm(x_out)
+        x_out = x_out.squeeze(0).transpose(0, 1)
 
         return x_out
