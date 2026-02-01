@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Iterator, List, Sequence, Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -24,6 +25,7 @@ from model.multi_gdn import MGDPR  # noqa: E402
 # ─── Reproducibility ────────────────────────────────────────────────────────────
 def set_seed(seed: int = 42) -> None:
     random.seed(seed)
+    np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
@@ -169,6 +171,12 @@ def main(args: argparse.Namespace) -> None:
         args.time_steps,
         "Test",
     )
+
+    if args.num_relation != train_ds.num_relations:
+        raise ValueError(
+            "The number of relations must match the dataset feature relations "
+            f"({train_ds.num_relations})."
+        )
 
     model = MGDPR(
         num_nodes,
