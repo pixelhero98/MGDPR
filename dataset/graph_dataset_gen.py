@@ -29,6 +29,8 @@ def _ensure_sequence(name: str, values: Iterable[str]) -> List[str]:
 class GraphDataset(Dataset[GraphSample]):
     """Dataset of sliding-window graph snapshots for stock prediction."""
 
+    num_relations = _NUM_FEATURES
+
     def __init__(
         self,
         root: str | Path,
@@ -58,6 +60,7 @@ class GraphDataset(Dataset[GraphSample]):
         self.dataset_type = dataset_type
         self.sparsification_threshold = float(sparsification_threshold)
         self.feature_dim = self.window * _NUM_FEATURES
+        self.num_relations = _NUM_FEATURES
 
         self._dataframes: Dict[str, pd.DataFrame] = {
             company: self._load_company_frame(company) for company in self.companies
