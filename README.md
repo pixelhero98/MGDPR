@@ -1,7 +1,12 @@
 # MGDPR
 
-MGDPR is a PyTorch implementation for graph-based stock movement prediction. The default open-source workflow uses ratio-only node features for representation learning, log-transformed OHLCV features for graph construction, and continuous mutual information adjacency.
+Official implementation for:
 
+> Multi-relational graph diffusion neural network with parallel retention for stock trends classification.
+> In ICASSP 2024-2024 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) (pp. 6545-6549). IEEE.
+
+Since the old tickers might be delisted, the old data on Dropbox is missing due to storage shortage. 
+We encourage experimentation with freshly fetched financial data. This repository can now build graph datasets from freshly fetched market data.
 ## Install
 
 ```bash
@@ -77,9 +82,5 @@ python train/train_val_test.py \
 ```
 
 ## Feature Modes
-
-`ratio_ohlcv` uses five ratio features per day: `Open/prev Close`, `High/Open`, `Low/Open`, `Close/Open`, and `Volume/prev Volume`. With `time_steps=21`, both `ratio_ohlcv` and `log_ohlcv` produce `105` learning features per ticker.
-
-`graph_feature_mode=log_ohlcv` computes graph construction inputs from `log1p(OHLCV)`. `graph_mode=continuous_mi` builds one adjacency matrix for each OHLCV channel using sklearn continuous mutual information.
 
 Yahoo Finance and Wikipedia are external research data sources. Their availability and current S&P 500 membership can change over time.
