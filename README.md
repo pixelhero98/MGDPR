@@ -83,8 +83,4 @@ python train/train_val_test.py \
 
 ## Feature Modes
 
-`ratio_ohlcv` uses five ratio features per day: `Open/prev Close`, `High/Open`, `Low/Open`, `Close/Open`, and `Volume/prev Volume`. With `time_steps=21`, both `ratio_ohlcv` and `log_ohlcv` produce `105` learning features per ticker.
-
-`graph_feature_mode=log_ohlcv` computes graph construction inputs from `log1p(OHLCV)`. `graph_mode=continuous_mi` builds one adjacency matrix for each OHLCV channel using sklearn continuous mutual information.
-
 Yahoo Finance and Wikipedia are external research data sources. Their availability and current S&P 500 membership can change over time.
