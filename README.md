@@ -1,6 +1,11 @@
 # MGDPR
+Official implementation for:
 
-MGDPR is a PyTorch implementation for graph-based stock movement prediction. The default open-source workflow uses ratio-only node features for representation learning, log-transformed OHLCV features for graph construction, and continuous mutual information adjacency.
+> Multi-relational graph diffusion neural network with parallel retention for stock trends classification.
+> In ICASSP 2024-2024 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) (pp. 6545-6549). IEEE.
+> 
+Since the old tickers might be delisted, the old data on Dropbox is missing due to storage shortage. 
+We encourage experimentation with freshly fetched financial data. This repository can now build graph datasets from freshly fetched market data.
 
 ## Install
 
